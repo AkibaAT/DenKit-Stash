@@ -1,0 +1,69 @@
+# Go binaries
+denkit-stash
+denkit-stash.exe
+*.exe
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Storage directory
+storage/
+files/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+logs/
+
+# Environment files (all variants)
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+
+# Backup files
+backups/
+*.sql
+*.tar.gz
+
+# SSL certificates
+*.crt
+*.key
+*.pem
+
+# Development files
+.ddev/
+simple-denkit-stash/
+fetch-test-*/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test output
+test/
+coverage.out
+
+# Dependencies
+vendor/
+
+# Go specific
+*.out
+*.test
+*.prof
+
+# Docker overrides
+docker-compose.override.yml

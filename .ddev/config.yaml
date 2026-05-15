@@ -1,0 +1,48 @@
+name: denkit-stash
+type: generic
+docroot: .
+webserver_type: generic
+xdebug_enabled: false
+additional_hostnames:
+  - "denkit-stash"
+  - "api.denkit-stash"
+additional_fqdns: []
+database:
+    type: postgres
+    version: "18"
+use_dns_when_possible: true
+web_environment:
+    - POSTGRES_HOST=db
+    - POSTGRES_PORT=5432
+    - POSTGRES_DB=db
+    - POSTGRES_USER=db
+    - POSTGRES_PASSWORD=db
+    - MINIO_ENDPOINT=minio:9000
+    - MINIO_PUBLIC_ENDPOINT=http://minio:9000
+    - MINIO_ACCESS_KEY=ddevminio
+    - MINIO_SECRET_KEY=ddevminio
+    - MINIO_BUCKET=denkit-storage
+    - MINIO_USE_SSL=false
+    - DENKIT_API_KEY_HASH_SECRET=denkit-ddev-api-key-hash-secret
+corepack_enable: false
+# Custom web build with latest Go and tools
+webimage_extra_packages: []
+web_extra_exposed_ports:
+  - name: denkit-stash-api
+    container_port: 8080
+    http_port: 80
+    https_port: 443
+web_extra_daemons:
+  - name: denkit-stash
+    command: "/var/www/html/denkit-stash"
+    directory: /var/www/html
+hooks:
+  pre-start:
+    - exec-host: "go build -v -o denkit-stash ."
+  post-start:
+    - exec: "echo 'Setting up MinIO client alias...'"
+    - exec: "mc alias set minio http://minio:9000 ddevminio ddevminio || echo 'MinIO alias setup failed'"
+    - exec: "echo 'Creating MinIO bucket...'"
+    - exec: "mc mb minio/denkit-storage || echo 'Bucket already exists or will be created by application'"
+    - exec: "echo 'Keeping MinIO bucket private; downloads must use application-generated signed URLs...'"
+    - exec: "mc anonymous set none minio/denkit-storage || echo 'Bucket policy will remain private by default'"

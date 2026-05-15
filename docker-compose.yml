@@ -1,0 +1,120 @@
+services:
+  denkit-stash:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: denkit-stash
+    restart: unless-stopped
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_USE_SSL=${MINIO_USE_SSL}
+      - PORT=${PORT}
+      - GIN_MODE=${GIN_MODE}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - ENABLE_DEV_ENDPOINTS=false
+      - DENKIT_API_KEY_HASH_SECRET=${DENKIT_API_KEY_HASH_SECRET}
+      - DENKIT_HTTP_READ_HEADER_TIMEOUT=${DENKIT_HTTP_READ_HEADER_TIMEOUT:-5s}
+      - DENKIT_HTTP_READ_TIMEOUT=${DENKIT_HTTP_READ_TIMEOUT:-30m}
+      - DENKIT_HTTP_WRITE_TIMEOUT=${DENKIT_HTTP_WRITE_TIMEOUT:-30m}
+      - DENKIT_HTTP_IDLE_TIMEOUT=${DENKIT_HTTP_IDLE_TIMEOUT:-2m}
+      - DENKIT_MAX_REQUEST_BODY_BYTES=${DENKIT_MAX_REQUEST_BODY_BYTES:-1048576}
+      - DENKIT_MAX_UPLOAD_SESSION_BYTES=${DENKIT_MAX_UPLOAD_SESSION_BYTES:-53687091200}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - default
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK}"
+      - "traefik.http.services.denkit-stash.loadbalancer.server.port=${PORT}"
+      - "traefik.http.routers.denkit-stash.rule=Host(`${DENKIT_SUBDOMAIN}.${DOMAIN}`)"
+      - "traefik.http.routers.denkit-stash.entrypoints=websecure"
+      - "traefik.http.routers.denkit-stash.tls=true"
+      - "traefik.http.routers.denkit-stash.service=denkit-stash"
+
+      - "traefik.http.routers.denkit-stash-api.rule=Host(`${DENKIT_API_SUBDOMAIN}.${DOMAIN}`)"
+      - "traefik.http.routers.denkit-stash-api.entrypoints=websecure"
+      - "traefik.http.routers.denkit-stash-api.tls=true"
+      - "traefik.http.routers.denkit-stash-api.service=denkit-stash"
+
+  db:
+    image: postgres:18.4-alpine3.23@sha256:38346350acb3e824c6948e6df7ff4759f48ba09d8ef4cb8d1b6e6db120f56872
+    container_name: denkit-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    container_name: denkit-minio
+    restart: unless-stopped
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - default
+      - traefik
+    ports:
+      - "127.0.0.1:9001:9001"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK}"
+      - "traefik.http.services.minio-api.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-api.rule=Host(`${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}`)"
+      - "traefik.http.routers.minio-api.entrypoints=websecure"
+      - "traefik.http.routers.minio-api.tls=true"
+      - "traefik.http.routers.minio-api.service=minio-api"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  postgres_data:
+    name: ${DB_VOLUME_NAME}
+  minio_data:
+    name: ${MINIO_VOLUME_NAME}
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK}
+    external: true
+  default:
+    name: denkit-network
