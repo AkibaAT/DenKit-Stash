@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -236,6 +238,101 @@ func TestPutUploadSessionRejectsFinalSizeOverQuota(t *testing.T) {
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected over-quota final size to return 413, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPutUploadSessionRejectsFinalSizeMismatchBeforeWriting(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv(maxUploadSessionBytesEnv, "5")
+
+	handler, db, upload, _ := newTestWharfHandler(t)
+	defer db.Close()
+	build := createBuild(t, db, upload.ID, nil)
+	buildFile := createUploadedBuildFile(t, db, build.ID, "patch", "default")
+
+	session := &models.UploadSession{
+		ID:          "session-final-mismatch",
+		BuildFileID: buildFile.ID,
+		StoragePath: "builds/1/patch_default",
+		State:       "active",
+	}
+	if err := db.CreateUploadSession(session); err != nil {
+		t.Fatalf("create upload session: %v", err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		req := httptest.NewRequest(http.MethodPut, "/wharf/upload-sessions/session-final-mismatch", strings.NewReader("abcd"))
+		req.Header.Set("Content-Range", "bytes 0-3/5")
+		req = mux.SetURLVars(req, map[string]string{"id": session.ID})
+		rec := httptest.NewRecorder()
+
+		handler.PutUploadSession(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d: expected final size mismatch to return 400, got %d: %s", attempt, rec.Code, rec.Body.String())
+		}
+		if _, err := os.Stat(filepath.Join("storage", "upload-sessions", session.ID)); !os.IsNotExist(err) {
+			t.Fatalf("attempt %d: expected rejected final chunk not to create a session file, stat err=%v", attempt, err)
+		}
+		updated, err := db.GetUploadSessionByID(session.ID)
+		if err != nil {
+			t.Fatalf("attempt %d: get upload session: %v", attempt, err)
+		}
+		if updated.Size != 0 {
+			t.Fatalf("attempt %d: expected rejected final chunk not to advance session size, got %d", attempt, updated.Size)
+		}
+	}
+}
+
+func TestPutUploadSessionTruncatesStaleLocalFileToPersistedOffset(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	handler, db, upload, _ := newTestWharfHandler(t)
+	defer db.Close()
+	build := createBuild(t, db, upload.ID, nil)
+	buildFile := createUploadedBuildFile(t, db, build.ID, "patch", "default")
+
+	session := &models.UploadSession{
+		ID:          "session-stale-local-file",
+		BuildFileID: buildFile.ID,
+		StoragePath: "builds/1/patch_default",
+		State:       "active",
+	}
+	if err := db.CreateUploadSession(session); err != nil {
+		t.Fatalf("create upload session: %v", err)
+	}
+
+	sessionPath := filepath.Join("storage", "upload-sessions", session.ID)
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0755); err != nil {
+		t.Fatalf("create upload session dir: %v", err)
+	}
+	if err := os.WriteFile(sessionPath, []byte("stale-bytes"), 0644); err != nil {
+		t.Fatalf("write stale session file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/wharf/upload-sessions/session-stale-local-file", strings.NewReader("ok"))
+	req.Header.Set("Content-Range", "bytes 0-1/*")
+	req = mux.SetURLVars(req, map[string]string{"id": session.ID})
+	rec := httptest.NewRecorder()
+
+	handler.PutUploadSession(rec, req)
+
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("expected accepted chunk to return 308, got %d: %s", rec.Code, rec.Body.String())
+	}
+	contents, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read session file: %v", err)
+	}
+	if string(contents) != "ok" {
+		t.Fatalf("expected stale bytes to be replaced at persisted offset, got %q", string(contents))
+	}
+	updated, err := db.GetUploadSessionByID(session.ID)
+	if err != nil {
+		t.Fatalf("get upload session: %v", err)
+	}
+	if updated.Size != 2 {
+		t.Fatalf("expected accepted chunk to advance session size to 2, got %d", updated.Size)
 	}
 }
 

@@ -101,6 +101,10 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 			http.Error(w, `{"errors":["upload session exceeds maximum size"]}`, http.StatusRequestEntityTooLarge)
 			return
 		}
+		if start+chunkSize != total {
+			http.Error(w, `{"errors":["final upload size mismatch"]}`, http.StatusBadRequest)
+			return
+		}
 	}
 
 	sessionPath := h.uploadSessionPath(session.ID)
@@ -109,9 +113,19 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	file, err := os.OpenFile(sessionPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(sessionPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		http.Error(w, `{"errors":["could not open upload session"]}`, http.StatusInternalServerError)
+		return
+	}
+	if err = file.Truncate(session.Size); err != nil {
+		_ = file.Close()
+		http.Error(w, `{"errors":["could not prepare upload session"]}`, http.StatusInternalServerError)
+		return
+	}
+	if _, err = file.Seek(session.Size, io.SeekStart); err != nil {
+		_ = file.Close()
+		http.Error(w, `{"errors":["could not prepare upload session"]}`, http.StatusInternalServerError)
 		return
 	}
 	written, copyErr := io.Copy(file, io.LimitReader(r.Body, chunkSize))
