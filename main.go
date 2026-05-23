@@ -212,6 +212,9 @@ func main() {
 		port           = flag.String("port", "8080", "Port to run the server on")
 		createUser     = flag.String("create-user", "", "Create a regular user with the given username")
 		createAdmin    = flag.String("create-admin", "", "Create an admin user with the given username")
+		ensureUser     = flag.String("ensure-user", "", "Create or update a regular user with the given username")
+		ensureAdmin    = flag.String("ensure-admin", "", "Create or update an admin user with the given username")
+		apiKey         = flag.String("api-key", "", "API key to use with --ensure-user or --ensure-admin")
 		listUsers      = flag.Bool("list-users", false, "List all users in the database")
 		deactivateUser = flag.String("deactivate-user", "", "Deactivate user with the given username")
 		activateUser   = flag.String("activate-user", "", "Activate user with the given username")
@@ -244,6 +247,22 @@ func main() {
 		_, err := auth.CreateUser(db, *createAdmin, "admin")
 		if err != nil {
 			log.Fatalf("Failed to create admin: %v", err)
+		}
+		os.Exit(0)
+	}
+
+	if *ensureUser != "" {
+		_, err := auth.EnsureUser(db, *ensureUser, "user", *apiKey)
+		if err != nil {
+			log.Fatalf("Failed to ensure user: %v", err)
+		}
+		os.Exit(0)
+	}
+
+	if *ensureAdmin != "" {
+		_, err := auth.EnsureUser(db, *ensureAdmin, "admin", *apiKey)
+		if err != nil {
+			log.Fatalf("Failed to ensure admin: %v", err)
 		}
 		os.Exit(0)
 	}

@@ -128,6 +128,7 @@ type Database interface {
 	// Builds
 	GetBuildByID(id int64) (*Build, error)
 	GetBuildsByUploadID(uploadID int64) ([]*Build, error)
+	GetLatestCompletedBuildByGameChannelVersion(gameID int64, channel string, userVersion string) (*Build, error)
 	CreateBuild(build *Build) error
 	UpdateBuild(build *Build) error
 

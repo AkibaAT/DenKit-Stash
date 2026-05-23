@@ -167,6 +167,7 @@ User management commands:
 ```bash
 ./denkit-stash --create-user=alice
 ./denkit-stash --create-admin=admin
+./denkit-stash --ensure-admin=admin --api-key="$DENKIT_STASH_API_KEY"
 ./denkit-stash --list-users
 ./denkit-stash --activate-user=alice
 ./denkit-stash --deactivate-user=alice

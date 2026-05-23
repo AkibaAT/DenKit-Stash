@@ -1124,6 +1124,110 @@ paths:
       summary: Create a build for a target channel
       tags:
         - Wharf
+  /wharf/builds/latest:
+    get:
+      operationId: get-latest-completed-wharf-build
+      parameters:
+        - description: Target in username/game form
+          in: query
+          name: target
+          required: true
+          schema:
+            type: string
+        - description: Channel name
+          in: query
+          name: channel
+          required: true
+          schema:
+            type: string
+        - description: Build user version
+          in: query
+          name: user_version
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  build:
+                    $ref: "#/components/schemas/CoreBuildResponse"
+                required:
+                  - build
+                type: object
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Unauthorized
+        "403":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Not Found
+      security:
+        - ApiKeyAuth: []
+      summary: Get newest completed build for a target channel and user version
+      tags:
+        - Wharf
   /wharf/builds/{buildId}/files/{fileId}:
     post:
       operationId: finalize-wharf-build-file

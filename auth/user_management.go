@@ -33,6 +33,45 @@ func CreateUser(db models.Database, username, role string) (*models.User, error)
 	return user, nil
 }
 
+func EnsureUser(db models.Database, username, role, apiKey string) (*models.User, error) {
+	if apiKey == "" {
+		var err error
+		apiKey, err = GenerateAPIKey()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate API key: %v", err)
+		}
+	}
+
+	existingUser, err := db.GetUserByUsername(username)
+	if err == nil {
+		existingUser.DisplayName = username
+		existingUser.APIKey = apiKey
+		existingUser.Role = role
+		existingUser.IsActive = true
+		if err := db.UpdateUser(existingUser); err != nil {
+			return nil, fmt.Errorf("failed to update user: %v", err)
+		}
+
+		fmt.Printf("Updated %s user: %s with configured API key\n", role, username)
+		return existingUser, nil
+	}
+
+	user := &models.User{
+		Username:    username,
+		DisplayName: username,
+		APIKey:      apiKey,
+		Role:        role,
+		IsActive:    true,
+	}
+
+	if err := db.CreateUser(user); err != nil {
+		return nil, fmt.Errorf("failed to create user: %v", err)
+	}
+
+	fmt.Printf("Created %s user: %s with configured API key\n", role, username)
+	return user, nil
+}
+
 func ListUsers(db models.Database) error {
 	users, err := db.ListUsers()
 	if err != nil {

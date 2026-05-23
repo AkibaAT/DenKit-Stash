@@ -172,6 +172,71 @@ func TestCreateBuildRejectsOversizedControlRequest(t *testing.T) {
 	}
 }
 
+func TestGetLatestCompletedBuildFindsTargetChannelUserVersion(t *testing.T) {
+	handler, db, upload, _ := newTestWharfHandler(t)
+	defer db.Close()
+
+	user, err := db.GetUserByUsername("testuser")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+
+	started := createBuild(t, db, upload.ID, nil)
+	started.UserVersion = "1.0"
+	started.State = "started"
+	if err := db.UpdateBuild(started); err != nil {
+		t.Fatalf("update started build: %v", err)
+	}
+
+	completedOld := createBuild(t, db, upload.ID, nil)
+	completedOld.UserVersion = "1.0"
+	completedOld.State = "completed"
+	if err := db.UpdateBuild(completedOld); err != nil {
+		t.Fatalf("update old completed build: %v", err)
+	}
+
+	completedNew := createBuild(t, db, upload.ID, nil)
+	completedNew.UserVersion = "1.0"
+	completedNew.State = "completed"
+	if err := db.UpdateBuild(completedNew); err != nil {
+		t.Fatalf("update new completed build: %v", err)
+	}
+
+	otherVersion := createBuild(t, db, upload.ID, nil)
+	otherVersion.UserVersion = "2.0"
+	otherVersion.State = "completed"
+	if err := db.UpdateBuild(otherVersion); err != nil {
+		t.Fatalf("update other version build: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/wharf/builds/latest?target=testuser/test-game&channel=main&user_version=1.0", nil)
+	req = req.WithContext(auth.SetUser(req.Context(), user))
+	rec := httptest.NewRecorder()
+
+	handler.GetLatestCompletedBuild(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Build struct {
+			ID          int64  `json:"id"`
+			UserVersion string `json:"user_version"`
+			State       string `json:"state"`
+		} `json:"build"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Build.ID != completedNew.ID {
+		t.Fatalf("expected latest completed build %d, got %d", completedNew.ID, response.Build.ID)
+	}
+	if response.Build.UserVersion != "1.0" || response.Build.State != "completed" {
+		t.Fatalf("unexpected build response: %+v", response.Build)
+	}
+}
+
 func TestPutUploadSessionRejectsChunksOverQuota(t *testing.T) {
 	t.Setenv(maxUploadSessionBytesEnv, "4")
 

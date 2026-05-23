@@ -494,6 +494,30 @@ func (d *PostgresDatabase) GetBuildsByUploadID(uploadID int64) ([]*Build, error)
 	return builds, nil
 }
 
+func (d *PostgresDatabase) GetLatestCompletedBuildByGameChannelVersion(gameID int64, channel string, userVersion string) (*Build, error) {
+	build := &Build{}
+	var parentBuildID sql.NullInt64
+	err := d.db.QueryRow(`
+		SELECT b.id, b.upload_id, b.channel_name, b.parent_build_id, b.user_version, b.state, b.created_at, b.updated_at
+		FROM builds b
+		JOIN uploads u ON u.id = b.upload_id
+		WHERE u.game_id = $1
+			AND b.channel_name = $2
+			AND b.user_version = $3
+			AND b.state = 'completed'
+		ORDER BY b.id DESC
+		LIMIT 1`, gameID, channel, userVersion).Scan(
+		&build.ID, &build.UploadID, &build.ChannelName, &parentBuildID, &build.UserVersion,
+		&build.State, &build.CreatedAt, &build.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if parentBuildID.Valid {
+		build.ParentBuildID = &parentBuildID.Int64
+	}
+	return build, nil
+}
+
 // BuildFile methods
 func (d *PostgresDatabase) GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, error) {
 	rows, err := d.db.Query(`
