@@ -11,7 +11,7 @@ require (
 	github.com/itchio/savior v0.0.0-20260128212141-556ab9757054
 	github.com/itchio/wharf v0.0.0-20260509025649-e95738701284
 	github.com/lib/pq v1.12.3
-	github.com/minio/minio-go/v7 v7.1.0
+	github.com/minio/minio-go/v7 v7.2.0
 )
 
 require (
@@ -29,7 +29,6 @@ require (
 	github.com/getlantern/mtime v0.0.0-20200417132445-23682092d1f7 // indirect
 	github.com/getlantern/netx v0.0.0-20251021221514-279deb2cfd40 // indirect
 	github.com/getlantern/ops v0.0.0-20231025133620-f368ab734534 // indirect
-	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
@@ -43,7 +42,7 @@ require (
 	github.com/itchio/ox v0.0.0-20200826161350-12c6ca18d236 // indirect
 	github.com/itchio/screw v0.0.0-20260221011136-e674b460b040 // indirect
 	github.com/jgallagher/gosaca v0.0.0-20130226042358-754749770f08 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
@@ -66,4 +65,5 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
+	gopkg.in/ini.v1 v1.67.2 // indirect
 )
