@@ -11,42 +11,65 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// GET /wharf/channels - List all channels for a target
-func (h *WharfHandlers) ListChannels(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Query().Get("target")
-
+func (h *WharfHandlers) resolveTargetGame(w http.ResponseWriter, r *http.Request, target string) (*models.Game, bool) {
 	if target == "" {
-		http.Error(w, `{"errors":["missing build target (need game_id or target)"]}`, http.StatusBadRequest)
-		return
+		http.Error(w, `{"errors":["missing build target"]}`, http.StatusBadRequest)
+		return nil, false
 	}
 
-	// Parse target format: "username/gamename"
 	parts := strings.Split(target, "/")
 	if len(parts) != 2 {
 		http.Error(w, `{"errors":["invalid target format, expected username/gamename"]}`, http.StatusBadRequest)
-		return
+		return nil, false
 	}
 
 	username := parts[0]
 	gamename := parts[1]
-
-	// Get user from context (set by auth middleware)
 	user := auth.MustGetUser(r.Context())
-
-	// Validate namespace access
-	err := h.validateNamespaceAccess(user, username)
-	if err != nil {
+	if err := h.validateNamespaceAccess(user, username); err != nil {
 		fmt.Printf("Namespace access denied: %v\n", err)
 		http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
-		return
+		return nil, false
 	}
 
-	// Note: User and namespace validation already done above
+	targetUserID := user.ID
+	if user.Username != username {
+		targetUser, err := h.db.GetUserByUsername(username)
+		if err != nil {
+			http.Error(w, `{"errors":["target user not found"]}`, http.StatusNotFound)
+			return nil, false
+		}
+		targetUserID = targetUser.ID
+	}
 
-	// Find the game
-	game, err := h.db.GetGameByUserAndTitle(user.ID, gamename)
+	game, err := h.db.GetGameByUserAndTitle(targetUserID, gamename)
 	if err != nil {
 		http.Error(w, `{"errors":["game not found"]}`, http.StatusNotFound)
+		return nil, false
+	}
+
+	return game, true
+}
+
+func coreBuildData(build *models.Build) map[string]interface{} {
+	buildData := map[string]interface{}{
+		"id":           build.ID,
+		"upload_id":    build.UploadID,
+		"user_version": build.UserVersion,
+		"state":        build.State,
+		"created_at":   build.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if build.ParentBuildID != nil {
+		buildData["parent_build_id"] = *build.ParentBuildID
+	}
+
+	return buildData
+}
+
+// GET /wharf/channels - List all channels for a target
+func (h *WharfHandlers) ListChannels(w http.ResponseWriter, r *http.Request) {
+	game, ok := h.resolveTargetGame(w, r, r.URL.Query().Get("target"))
+	if !ok {
 		return
 	}
 
@@ -223,16 +246,44 @@ func (h *WharfHandlers) GetChannel(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// GET /wharf/builds - List builds for a target channel
+func (h *WharfHandlers) ListBuilds(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("target")
+	channelName := r.URL.Query().Get("channel")
+
+	if channelName == "" {
+		http.Error(w, `{"errors":["missing channel"]}`, http.StatusBadRequest)
+		return
+	}
+
+	game, ok := h.resolveTargetGame(w, r, target)
+	if !ok {
+		return
+	}
+
+	builds, err := h.db.GetBuildsByGameAndChannel(game.ID, channelName)
+	if err != nil {
+		http.Error(w, `{"errors":["failed to get builds"]}`, http.StatusInternalServerError)
+		return
+	}
+
+	buildsData := make([]map[string]interface{}, 0, len(builds))
+	for _, build := range builds {
+		buildsData = append(buildsData, coreBuildData(build))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"builds": buildsData,
+	})
+}
+
 // GET /wharf/builds/latest - Get the newest completed build for a target channel and user version
 func (h *WharfHandlers) GetLatestCompletedBuild(w http.ResponseWriter, r *http.Request) {
 	target := r.URL.Query().Get("target")
 	channelName := r.URL.Query().Get("channel")
 	userVersion := r.URL.Query().Get("user_version")
 
-	if target == "" {
-		http.Error(w, `{"errors":["missing build target"]}`, http.StatusBadRequest)
-		return
-	}
 	if channelName == "" {
 		http.Error(w, `{"errors":["missing channel"]}`, http.StatusBadRequest)
 		return
@@ -242,35 +293,8 @@ func (h *WharfHandlers) GetLatestCompletedBuild(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	parts := strings.Split(target, "/")
-	if len(parts) != 2 {
-		http.Error(w, `{"errors":["invalid target format, expected username/gamename"]}`, http.StatusBadRequest)
-		return
-	}
-
-	username := parts[0]
-	gamename := parts[1]
-
-	user := auth.MustGetUser(r.Context())
-	if err := h.validateNamespaceAccess(user, username); err != nil {
-		fmt.Printf("Namespace access denied: %v\n", err)
-		http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
-		return
-	}
-
-	targetUserID := user.ID
-	if user.Username != username {
-		targetUser, err := h.db.GetUserByUsername(username)
-		if err != nil {
-			http.Error(w, `{"errors":["target user not found"]}`, http.StatusNotFound)
-			return
-		}
-		targetUserID = targetUser.ID
-	}
-
-	game, err := h.db.GetGameByUserAndTitle(targetUserID, gamename)
-	if err != nil {
-		http.Error(w, `{"errors":["game not found"]}`, http.StatusNotFound)
+	game, ok := h.resolveTargetGame(w, r, target)
+	if !ok {
 		return
 	}
 
@@ -280,19 +304,8 @@ func (h *WharfHandlers) GetLatestCompletedBuild(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	buildData := map[string]interface{}{
-		"id":           build.ID,
-		"upload_id":    build.UploadID,
-		"user_version": build.UserVersion,
-		"state":        build.State,
-		"created_at":   build.CreatedAt.Format("2006-01-02T15:04:05Z"),
-	}
-	if build.ParentBuildID != nil {
-		buildData["parent_build_id"] = *build.ParentBuildID
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"build": buildData,
+		"build": coreBuildData(build),
 	})
 }

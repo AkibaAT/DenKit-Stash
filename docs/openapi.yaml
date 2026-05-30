@@ -985,6 +985,107 @@ paths:
       tags:
         - Core
   /wharf/builds:
+    get:
+      operationId: list-wharf-builds
+      parameters:
+        - description: Target in username/game form
+          in: query
+          name: target
+          required: true
+          schema:
+            type: string
+        - description: Channel name
+          in: query
+          name: channel
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  builds:
+                    items:
+                      $ref: "#/components/schemas/CoreBuildResponse"
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - builds
+                type: object
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Unauthorized
+        "403":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                additionalProperties: false
+                properties:
+                  errors:
+                    items:
+                      type: string
+                    type:
+                      - array
+                      - "null"
+                required:
+                  - errors
+                type: object
+          description: Not Found
+      security:
+        - ApiKeyAuth: []
+      summary: List builds for a target channel
+      tags:
+        - Wharf
     post:
       operationId: create-wharf-build
       requestBody:

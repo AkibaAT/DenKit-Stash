@@ -208,6 +208,7 @@ Wharf API:
 GET  /wharf/status
 GET  /wharf/channels
 GET  /wharf/channels/{channel}
+GET  /wharf/builds
 POST /wharf/builds
 GET  /wharf/builds/{id}/files
 POST /wharf/builds/{id}/files
