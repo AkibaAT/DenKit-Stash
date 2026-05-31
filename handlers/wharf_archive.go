@@ -4,10 +4,13 @@ import (
 	archivezip "archive/zip"
 	"context"
 	"denkit-stash/models"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -160,27 +163,36 @@ func (h *WharfHandlers) generateArchiveDefault(build *models.Build, patchFile *m
 		return fmt.Errorf("patch source tree does not match signature: %w", err)
 	}
 
-	archivePath := filepath.Join(workDir, "archive.zip")
-	archiveHandle, err := os.Create(archivePath)
-	if err != nil {
+	metadata := readArchiveOptimizationMetadata(outputDir)
+	archiveFormat := archiveFormatFromMetadata(metadata)
+	archivePath := filepath.Join(workDir, "archive."+archiveFormat)
+	if archiveFormat == "zip" {
+		archiveHandle, err := os.Create(archivePath)
+		if err != nil {
+			return err
+		}
+		outputPool := fspool.New(sourceContainer, outputDir)
+		_, compressErr := containerarchiver.CompressZip(archiveHandle, sourceContainer, outputPool, consumer)
+		closeErr := archiveHandle.Close()
+		if compressErr != nil {
+			return compressErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	} else if err = createArchiveFromDirectory(outputDir, archivePath, archiveFormat); err != nil {
 		return err
-	}
-	outputPool := fspool.New(sourceContainer, outputDir)
-	_, compressErr := containerarchiver.CompressZip(archiveHandle, sourceContainer, outputPool, consumer)
-	closeErr := archiveHandle.Close()
-	if compressErr != nil {
-		return compressErr
-	}
-	if closeErr != nil {
-		return closeErr
 	}
 
 	archiveInfo, err := os.Stat(archivePath)
 	if err != nil {
 		return err
 	}
-	archiveStoragePath := fmt.Sprintf("builds/%d/archive_default_%s.zip", build.ID, uuid.New().String())
-	if err = h.uploadObject(ctx, archivePath, archiveStoragePath, archiveInfo.Size()); err != nil {
+	archiveStoragePath := fmt.Sprintf("builds/%d/archive_default_%s.%s", build.ID, uuid.New().String(), archiveFormat)
+	if err = h.uploadObject(ctx, archivePath, archiveStoragePath, archiveInfo.Size(), contentTypeForArchiveFormat(archiveFormat)); err != nil {
+		return err
+	}
+	if err = h.updateUploadFromArchiveMetadata(build, metadata, archiveInfo.Size()); err != nil {
 		return err
 	}
 
@@ -214,14 +226,14 @@ func (h *WharfHandlers) downloadObject(ctx context.Context, objectName string, d
 	return closeErr
 }
 
-func (h *WharfHandlers) uploadObject(ctx context.Context, sourcePath string, objectName string, size int64) error {
+func (h *WharfHandlers) uploadObject(ctx context.Context, sourcePath string, objectName string, size int64, contentType string) error {
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
 	_, err = h.minioClient.PutObject(ctx, h.bucketName, objectName, source, size, minio.PutObjectOptions{
-		ContentType: "application/zip",
+		ContentType: contentType,
 	})
 	return err
 }
@@ -270,22 +282,160 @@ func validatePatchTargetContainer(build *models.Build, patchTarget *tlc.Containe
 	return nil
 }
 
+type archiveOptimizationMetadata struct {
+	Schema          string `json:"schema"`
+	OriginalArchive struct {
+		Filename string `json:"filename"`
+		Format   string `json:"format"`
+	} `json:"original_archive"`
+}
+
+func readArchiveOptimizationMetadata(extractPath string) *archiveOptimizationMetadata {
+	metadataPath := filepath.Join(extractPath, ".fvn-archive-metadata.json")
+	contents, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return nil
+	}
+
+	var metadata archiveOptimizationMetadata
+	if err = json.Unmarshal(contents, &metadata); err != nil {
+		return nil
+	}
+	if metadata.Schema != "fvn.archive_optimization.v1" {
+		return nil
+	}
+
+	return &metadata
+}
+
+func archiveFormatFromMetadata(metadata *archiveOptimizationMetadata) string {
+	if metadata == nil {
+		return "zip"
+	}
+	return normalizeArchiveFormat(metadata.OriginalArchive.Format)
+}
+
+func normalizeArchiveFormat(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "zip":
+		return "zip"
+	case "tar":
+		return "tar"
+	case "tar.gz", "tgz":
+		return "tar.gz"
+	case "tar.bz2", "tbz2":
+		return "tar.bz2"
+	default:
+		return "zip"
+	}
+}
+
+func archiveFormatFromPath(path string) string {
+	name := strings.ToLower(filepath.Base(path))
+	switch {
+	case strings.HasSuffix(name, ".tar.gz"):
+		return "tar.gz"
+	case strings.HasSuffix(name, ".tgz"):
+		return "tar.gz"
+	case strings.HasSuffix(name, ".tar.bz2"):
+		return "tar.bz2"
+	case strings.HasSuffix(name, ".tbz2"):
+		return "tar.bz2"
+	case strings.HasSuffix(name, ".tar"):
+		return "tar"
+	default:
+		return strings.TrimPrefix(filepath.Ext(name), ".")
+	}
+}
+
+func optimizedArchiveFilename(originalFilename string, archiveFormat string) string {
+	name := filepath.Base(originalFilename)
+	format := normalizeArchiveFormat(archiveFormat)
+	suffix := "." + format
+	lowerName := strings.ToLower(name)
+
+	if strings.HasSuffix(lowerName, suffix) {
+		return name[:len(name)-len(suffix)] + ".optimized." + format
+	}
+
+	return "archive.optimized." + format
+}
+
+func contentTypeForArchiveFormat(format string) string {
+	switch normalizeArchiveFormat(format) {
+	case "zip":
+		return "application/zip"
+	case "tar":
+		return "application/x-tar"
+	case "tar.gz":
+		return "application/gzip"
+	case "tar.bz2":
+		return "application/x-bzip2"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func createArchiveFromDirectory(sourceDir string, targetPath string, format string) error {
+	entries, err := topLevelArchiveEntries(sourceDir)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("cannot create archive from empty directory")
+	}
+
+	args := []string{}
+	switch normalizeArchiveFormat(format) {
+	case "tar":
+		args = []string{"tar", "-cf", targetPath, "-C", sourceDir, "--"}
+	case "tar.gz":
+		args = []string{"tar", "-czf", targetPath, "-C", sourceDir, "--"}
+	case "tar.bz2":
+		args = []string{"tar", "-cjf", targetPath, "-C", sourceDir, "--"}
+	default:
+		return fmt.Errorf("unsupported archive format: %s", format)
+	}
+	args = append(args, entries...)
+
+	return runArchiveCommand(args[0], args[1:]...)
+}
+
+func extractArchive(archivePath string, destDir string) error {
+	switch archiveFormatFromPath(archivePath) {
+	case "zip":
+		return extractZipArchive(archivePath, destDir)
+	case "tar":
+		return runArchiveCommand("tar", "-xf", archivePath, "-C", destDir)
+	case "tar.gz":
+		return runArchiveCommand("tar", "-xzf", archivePath, "-C", destDir)
+	case "tar.bz2":
+		return runArchiveCommand("tar", "-xjf", archivePath, "-C", destDir)
+	default:
+		return fmt.Errorf("unsupported archive format: %s", archiveFormatFromPath(archivePath))
+	}
+}
+
 func (h *WharfHandlers) restoreParentArchive(ctx context.Context, parentBuildID int64, targetDir string) error {
 	parentArchive, err := h.findBuildFile(parentBuildID, "archive", "default")
 	if err != nil {
 		return err
 	}
-	archivePath := filepath.Join(targetDir, ".parent.zip")
+	archivePath := filepath.Join(targetDir, ".parent."+archiveFormatFromPath(parentArchive.StoragePath))
 	if err = h.downloadObject(ctx, parentArchive.StoragePath, archivePath); err != nil {
 		return err
 	}
-	if err = h.extractZip(archivePath, targetDir); err != nil {
+	if err = extractArchive(archivePath, targetDir); err != nil {
 		return err
 	}
 	return os.Remove(archivePath)
 }
 
 func (h *WharfHandlers) extractZip(archivePath string, destDir string) error {
+	return extractZipArchive(archivePath, destDir)
+}
+
+func extractZipArchive(archivePath string, destDir string) error {
 	reader, err := archivezip.OpenReader(archivePath)
 	if err != nil {
 		return err
@@ -332,6 +482,29 @@ func (h *WharfHandlers) extractZip(archivePath string, destDir string) error {
 	return nil
 }
 
+func runArchiveCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s failed: %w: %s", name, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func topLevelArchiveEntries(sourceDir string) ([]string, error) {
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 func (h *WharfHandlers) hasReadyRequiredFile(files map[string]*models.BuildFile, key string) bool {
 	file := files[key]
 	return file != nil && file.Size > 0
@@ -349,6 +522,25 @@ func (h *WharfHandlers) updateUploadSizeFromArchive(build *models.Build, archive
 		return nil
 	}
 	upload.Size = archiveFile.Size
+	return h.db.UpdateUpload(upload)
+}
+
+func (h *WharfHandlers) updateUploadFromArchiveMetadata(build *models.Build, metadata *archiveOptimizationMetadata, archiveSize int64) error {
+	if metadata == nil || metadata.OriginalArchive.Filename == "" {
+		return nil
+	}
+	upload, err := h.db.GetUploadByID(build.UploadID)
+	if err != nil {
+		return err
+	}
+
+	upload.Filename = optimizedArchiveFilename(metadata.OriginalArchive.Filename, archiveFormatFromMetadata(metadata))
+	upload.DisplayName = strings.TrimSuffix(upload.Filename, "."+archiveFormatFromPath(upload.Filename))
+	upload.Size = archiveSize
+	if platforms := platformsForArchiveFilename(metadata.OriginalArchive.Filename); platforms != "[]" {
+		upload.Platforms = platforms
+	}
+
 	return h.db.UpdateUpload(upload)
 }
 

@@ -105,6 +105,102 @@ func TestPlatformsForChannelNameMatchesButlerPlatformTags(t *testing.T) {
 	}
 }
 
+func TestPlatformsForArchiveFilenameMatchesButlerPlatformTags(t *testing.T) {
+	tests := map[string]string{
+		"PASSWORD-b0.85-linux.tar.bz2": `["linux"]`,
+		"game-win-linux.zip":           `["windows","linux"]`,
+		"game-mac.zip":                 `["osx"]`,
+		"game-android.apk":             `["android"]`,
+		"windowless.tar.gz":            `[]`,
+	}
+
+	for filename, expected := range tests {
+		t.Run(filename, func(t *testing.T) {
+			if got := platformsForArchiveFilename(filename); got != expected {
+				t.Fatalf("platformsForArchiveFilename(%q) = %s, want %s", filename, got, expected)
+			}
+		})
+	}
+}
+
+func TestArchiveOptimizationMetadataControlsArchiveFormatAndFilename(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".fvn-archive-metadata.json"), []byte(`{
+		"schema": "fvn.archive_optimization.v1",
+		"original_archive": {
+			"filename": "PASSWORD-b0.85-linux.tar.bz2",
+			"format": "tar.bz2"
+		}
+	}`), 0644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	metadata := readArchiveOptimizationMetadata(dir)
+	if metadata == nil {
+		t.Fatal("expected metadata")
+	}
+
+	if got := archiveFormatFromMetadata(metadata); got != "tar.bz2" {
+		t.Fatalf("archiveFormatFromMetadata = %q, want tar.bz2", got)
+	}
+	if got := optimizedArchiveFilename(metadata.OriginalArchive.Filename, archiveFormatFromMetadata(metadata)); got != "PASSWORD-b0.85-linux.optimized.tar.bz2" {
+		t.Fatalf("optimizedArchiveFilename = %q", got)
+	}
+}
+
+func TestCreateArchiveFromDirectoryPreservesRequestedTarBz2Format(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "game"), 0755); err != nil {
+		t.Fatalf("mkdir game: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "game", "script.rpy"), []byte("label start:\n    return\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "game.optimized.tar.bz2")
+	if err := createArchiveFromDirectory(dir, archivePath, "tar.bz2"); err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+
+	outDir := t.TempDir()
+	if err := extractArchive(archivePath, outDir); err != nil {
+		t.Fatalf("extract archive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "game", "script.rpy")); err != nil {
+		t.Fatalf("expected extracted script: %v", err)
+	}
+}
+
+func TestUpdateUploadFromArchiveMetadataSetsFilenameFormatAndPlatforms(t *testing.T) {
+	handler, db, upload, _ := newTestWharfHandler(t)
+	defer db.Close()
+
+	build := createBuild(t, db, upload.ID, nil)
+	metadata := &archiveOptimizationMetadata{
+		Schema: "fvn.archive_optimization.v1",
+	}
+	metadata.OriginalArchive.Filename = "PASSWORD-b0.85-linux.tar.bz2"
+	metadata.OriginalArchive.Format = "tar.bz2"
+
+	if err := handler.updateUploadFromArchiveMetadata(build, metadata, 1234); err != nil {
+		t.Fatalf("update upload: %v", err)
+	}
+
+	updatedUpload, err := db.GetUploadByID(upload.ID)
+	if err != nil {
+		t.Fatalf("get upload: %v", err)
+	}
+	if updatedUpload.Filename != "PASSWORD-b0.85-linux.optimized.tar.bz2" {
+		t.Fatalf("filename = %q", updatedUpload.Filename)
+	}
+	if updatedUpload.Platforms != `["linux"]` {
+		t.Fatalf("platforms = %s", updatedUpload.Platforms)
+	}
+	if updatedUpload.Size != 1234 {
+		t.Fatalf("size = %d", updatedUpload.Size)
+	}
+}
+
 func TestCreateBuildCreatesUploadWithChannelPlatforms(t *testing.T) {
 	handler, db, upload, _ := newTestWharfHandler(t)
 	defer db.Close()

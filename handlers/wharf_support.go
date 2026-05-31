@@ -27,11 +27,22 @@ var channelPlatformRules = []struct {
 
 func platformsForChannelName(channelName string) string {
 	channelTokens := channelNameTokens(channelName)
+
+	return platformsForTokens(channelTokens)
+}
+
+func platformsForArchiveFilename(filename string) string {
+	filenameTokens := channelNameTokens(filename)
+
+	return platformsForTokens(filenameTokens)
+}
+
+func platformsForTokens(tokens map[string]bool) string {
 	platforms := make([]string, 0, len(channelPlatformRules))
 
 	for _, rule := range channelPlatformRules {
 		for _, alias := range rule.aliases {
-			if channelTokens[alias] {
+			if tokens[alias] {
 				platforms = append(platforms, rule.platform)
 				break
 			}
