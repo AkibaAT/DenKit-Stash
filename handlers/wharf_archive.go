@@ -290,15 +290,26 @@ type archiveOptimizationMetadata struct {
 	} `json:"original_archive"`
 }
 
+const maxArchiveOptimizationMetadataBytes = 64 * 1024
+
 func readArchiveOptimizationMetadata(extractPath string) *archiveOptimizationMetadata {
 	metadataPath := filepath.Join(extractPath, ".fvn-archive-metadata.json")
-	contents, err := os.ReadFile(metadataPath)
+	info, err := os.Stat(metadataPath)
 	if err != nil {
 		return nil
 	}
+	if !info.Mode().IsRegular() || info.Size() > maxArchiveOptimizationMetadataBytes {
+		return nil
+	}
+
+	file, err := os.Open(metadataPath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
 
 	var metadata archiveOptimizationMetadata
-	if err = json.Unmarshal(contents, &metadata); err != nil {
+	if err = json.NewDecoder(io.LimitReader(file, maxArchiveOptimizationMetadataBytes)).Decode(&metadata); err != nil {
 		return nil
 	}
 	if metadata.Schema != "fvn.archive_optimization.v1" {

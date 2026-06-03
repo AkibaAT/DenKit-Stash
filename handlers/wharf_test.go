@@ -148,6 +148,37 @@ func TestArchiveOptimizationMetadataControlsArchiveFormatAndFilename(t *testing.
 	}
 }
 
+func TestArchiveOptimizationMetadataIgnoresOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	metadataPath := filepath.Join(dir, ".fvn-archive-metadata.json")
+	file, err := os.Create(metadataPath)
+	if err != nil {
+		t.Fatalf("create metadata: %v", err)
+	}
+	if err = file.Truncate(maxArchiveOptimizationMetadataBytes + 1); err != nil {
+		file.Close()
+		t.Fatalf("truncate metadata: %v", err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatalf("close metadata: %v", err)
+	}
+
+	if metadata := readArchiveOptimizationMetadata(dir); metadata != nil {
+		t.Fatal("expected oversized metadata to be ignored")
+	}
+}
+
+func TestArchiveOptimizationMetadataIgnoresNonRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".fvn-archive-metadata.json"), 0755); err != nil {
+		t.Fatalf("create metadata directory: %v", err)
+	}
+
+	if metadata := readArchiveOptimizationMetadata(dir); metadata != nil {
+		t.Fatal("expected non-regular metadata to be ignored")
+	}
+}
+
 func TestCreateArchiveFromDirectoryPreservesRequestedTarBz2Format(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "game"), 0755); err != nil {
