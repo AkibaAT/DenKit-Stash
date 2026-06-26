@@ -11,7 +11,7 @@ require (
 	github.com/itchio/savior v0.0.0-20260128212141-556ab9757054
 	github.com/itchio/wharf v0.0.0-20260509025649-e95738701284
 	github.com/lib/pq v1.12.3
-	github.com/minio/minio-go/v7 v7.2.0
+	github.com/minio/minio-go/v7 v7.2.1
 )
 
 require (
