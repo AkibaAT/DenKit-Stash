@@ -30,7 +30,7 @@ func TestInitializeObjectStorageRequiresExplicitConnectionSettings(t *testing.T)
 		t.Fatal("expected missing storage endpoint to fail")
 	}
 
-	t.Setenv("S3_ENDPOINT", "localhost:9000")
+	t.Setenv("S3_ENDPOINT", "http://localhost:9000")
 	if _, err := initializeObjectStorage(); err == nil {
 		t.Fatal("expected missing storage access key to fail")
 	}
@@ -47,7 +47,7 @@ func TestInitializeObjectStorageRequiresExplicitConnectionSettings(t *testing.T)
 }
 
 func TestStorageConfigReadsS3Environment(t *testing.T) {
-	t.Setenv("S3_ENDPOINT", "storage:9000")
+	t.Setenv("S3_ENDPOINT", "http://storage:9000")
 	t.Setenv("S3_PUBLIC_ENDPOINT", "https://storage.example.test")
 	t.Setenv("S3_ACCESS_KEY", "storage-access")
 	t.Setenv("S3_SECRET_KEY", "storage-secret")
@@ -58,8 +58,18 @@ func TestStorageConfigReadsS3Environment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read storage config: %v", err)
 	}
-	if cfg.endpoint != "storage:9000" || cfg.publicEndpoint != "https://storage.example.test" || cfg.accessKey != "storage-access" || cfg.secretKey != "storage-secret" || cfg.bucketName != "storage-bucket" || !cfg.useSSL {
+	if cfg.endpoint != "http://storage:9000" || cfg.publicEndpoint != "https://storage.example.test" || cfg.accessKey != "storage-access" || cfg.secretKey != "storage-secret" || cfg.bucketName != "storage-bucket" || !cfg.useSSL {
 		t.Fatalf("unexpected storage config: %#v", cfg)
+	}
+}
+
+func TestEndpointURLForS3ClientAcceptsExplicitHostnameURL(t *testing.T) {
+	got, err := endpointURLForS3Client("http://rustfs:9000", false)
+	if err != nil {
+		t.Fatalf("parse explicit RustFS endpoint: %v", err)
+	}
+	if got != "http://rustfs:9000" {
+		t.Fatalf("unexpected endpoint URL: %q", got)
 	}
 }
 

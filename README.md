@@ -68,8 +68,8 @@ The application talks to object storage through the official AWS SDK for Go v2 w
 
 Storage setup:
 
-- Set `S3_ENDPOINT` to the internal S3 endpoint the server can reach.
-- Set `S3_PUBLIC_ENDPOINT` to the externally reachable S3 endpoint used in signed upload and download URLs.
+- Set `S3_ENDPOINT` to the full internal S3 URL the server can reach, including the `http://` or `https://` scheme.
+- Set `S3_PUBLIC_ENDPOINT` to the full externally reachable S3 URL used in signed upload and download URLs, also including its scheme.
 - Set `S3_BUCKET` to the private bucket DenKit should use for build files.
 - Set `S3_ACCESS_KEY` and `S3_SECRET_KEY` to credentials with read, write, and multipart-upload access for that bucket.
 
