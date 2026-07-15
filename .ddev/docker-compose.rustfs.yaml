@@ -7,15 +7,16 @@ services:
       RUSTFS_SECRET_KEY: ddevrustfs
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
       RUSTFS_REGION: us-east-1
+      VIRTUAL_HOST: ${DDEV_HOSTNAME}
+      HTTPS_EXPOSE: 9091:9001
     command: ["--address", ":9000", "--console-enable", "/data"]
     volumes:
       - "rustfs:/data"
     expose:
       - "9000"
       - "9001"
-    ports:
-      - "127.0.0.1:9090:9001"
     labels:
       com.ddev.site-name: ${DDEV_SITENAME}
       com.ddev.approot: ${DDEV_APPROOT}

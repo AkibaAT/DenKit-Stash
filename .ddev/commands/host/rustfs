@@ -6,4 +6,4 @@
 
 echo "Login using 'ddevrustfs' user and 'ddevrustfs' password"
 
-ddev launch http://127.0.0.1:9090
+ddev launch https://${DDEV_SITENAME}.${DDEV_TLD}:9091/rustfs/console/
