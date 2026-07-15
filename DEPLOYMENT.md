@@ -1,6 +1,6 @@
 # Production Deployment
 
-DenKit Stash is a single Go service backed by PostgreSQL and MinIO-compatible object storage. The included `docker-compose.yml` is a production-oriented starting point for deployments behind Traefik.
+DenKit Stash is a single Go service backed by PostgreSQL and RustFS/S3-compatible object storage. The included `docker-compose.yml` is a production-oriented starting point for deployments behind Traefik.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ $EDITOR .env
 
 The service runs schema setup at startup through the Go database layer. Do not mount the removed legacy SQL migration directory into PostgreSQL.
 
-DenKit also checks `MINIO_BUCKET` at startup and creates it when the configured MinIO/S3 credentials are allowed to create buckets. It then removes any bucket policy so the bucket stays private; clients receive signed URLs for uploads and downloads instead of public object access. If you use restricted S3 credentials, create the bucket before starting the service and grant those credentials read/write/multipart plus bucket-policy permissions for that bucket.
+DenKit uses the official AWS SDK for Go v2 against the configured S3-compatible endpoint. It checks `S3_BUCKET` at startup and creates it when the configured S3 credentials are allowed to create buckets. It then removes any bucket policy so the bucket stays private; clients receive signed URLs for uploads and downloads instead of public object access. If you use restricted S3 credentials, create the bucket before starting the service and grant those credentials read/write/multipart plus bucket-policy permissions for that bucket.
 
 After the service starts, create a DenKit user token on the server:
 
@@ -44,29 +44,29 @@ Required settings:
 
 - `DOMAIN`, `DENKIT_SUBDOMAIN`, `DENKIT_API_SUBDOMAIN`, `DENKIT_STORAGE_SUBDOMAIN`
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
-- `MINIO_ENDPOINT`, `MINIO_PUBLIC_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`
-- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`
+- `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`
+- `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`
 - `TRAEFIK_NETWORK`
 
-Set `ENABLE_DEV_ENDPOINTS=false` in production. The development-only OAuth and MinIO test routes are not registered unless that value is exactly `true`.
+Set `ENABLE_DEV_ENDPOINTS=false` in production. The development-only OAuth and object storage test routes are not registered unless that value is exactly `true`.
 
 ## Traefik Configuration
 
 The compose file exposes:
 
 - DenKit Stash routes on `${DENKIT_SUBDOMAIN}.${DOMAIN}` and `${DENKIT_API_SUBDOMAIN}.${DOMAIN}`
-- MinIO API route on `${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}`
-- MinIO console bound only to `127.0.0.1:9001`
+- RustFS S3 API route on `${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}`
+- RustFS console bound only to `127.0.0.1:9001`
 
 ## Security
 
 - Containers run as non-root where applicable.
-- MinIO storage should stay private; downloads and uploads use signed URLs.
-- The MinIO console is local-only by default. Access it through SSH tunneling or `docker compose exec`.
+- RustFS storage should stay private; downloads and uploads use signed URLs.
+- The RustFS console is local-only by default. Access it through SSH tunneling.
 - Store real secrets outside version control. `.env` files are ignored.
 - Keep `ENABLE_DEV_ENDPOINTS=false` outside local development.
 
-## MinIO Console
+## RustFS Console
 
 ```bash
 ssh -L 9001:localhost:9001 user@your-server
@@ -74,18 +74,29 @@ ssh -L 9001:localhost:9001 user@your-server
 
 Then open `http://localhost:9001` locally.
 
-Useful MinIO checks:
+Useful RustFS checks:
 
 ```bash
-docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc ls local'
-docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc stat "local/$MINIO_BUCKET"'
-docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc anonymous set none "local/$MINIO_BUCKET"'
+docker run --rm --network denkit-network \
+  -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+  -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+  -e AWS_DEFAULT_REGION="${S3_REGION:-us-east-1}" \
+  amazon/aws-cli s3api head-bucket \
+  --endpoint-url http://rustfs:9000 \
+  --bucket "$S3_BUCKET"
+
+docker run --rm --network denkit-network \
+  -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+  -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+  -e AWS_DEFAULT_REGION="${S3_REGION:-us-east-1}" \
+  amazon/aws-cli s3 ls \
+  --endpoint-url http://rustfs:9000
 ```
 
 ## Volumes
 
 - PostgreSQL data: `${DB_VOLUME_NAME}`
-- MinIO data: `${MINIO_VOLUME_NAME}`
+- RustFS data: `${RUSTFS_VOLUME_NAME}`
 
 ## Maintenance
 
@@ -103,4 +114,4 @@ git pull
 - Check `docker compose ps` and service health first.
 - Check Traefik routing and DNS when HTTP routes fail.
 - Check `docker compose logs db` for PostgreSQL credential or readiness problems.
-- Check `docker compose logs minio` for bucket or credential problems.
+- Check `docker compose logs rustfs` for bucket or credential problems.

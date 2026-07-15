@@ -184,7 +184,7 @@ type upgradePathResponse struct {
 	} `json:"upgradePath"`
 }
 
-type minioTestResponse struct {
+type storageTestResponse struct {
 	Message     string `json:"message"`
 	SignedURL   string `json:"signed_url" format:"uri"`
 	ExpiresIn   string `json:"expires_in"`

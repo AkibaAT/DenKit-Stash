@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/itchio/headway/state"
 	"github.com/itchio/lake/pools/fspool"
@@ -24,7 +26,6 @@ import (
 	"github.com/itchio/wharf/pwr"
 	"github.com/itchio/wharf/pwr/bowl"
 	"github.com/itchio/wharf/pwr/patcher"
-	"github.com/minio/minio-go/v7"
 )
 
 func (h *WharfHandlers) checkAndUpdateBuildState(buildID int64) error {
@@ -83,8 +84,8 @@ func (h *WharfHandlers) checkAndUpdateBuildState(buildID int64) error {
 }
 
 func (h *WharfHandlers) generateArchiveDefault(build *models.Build, patchFile *models.BuildFile, signatureFile *models.BuildFile) error {
-	if h.minioClient == nil {
-		return fmt.Errorf("minio client is required")
+	if h.storageClient == nil {
+		return fmt.Errorf("object storage client is required")
 	}
 
 	ctx := context.Background()
@@ -208,17 +209,20 @@ func (h *WharfHandlers) generateArchiveDefault(build *models.Build, patchFile *m
 }
 
 func (h *WharfHandlers) downloadObject(ctx context.Context, objectName string, destPath string) error {
-	object, err := h.minioClient.GetObject(ctx, h.bucketName, objectName, minio.GetObjectOptions{})
+	object, err := h.storageClient.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(h.bucketName),
+		Key:    aws.String(objectName),
+	})
 	if err != nil {
 		return err
 	}
-	defer object.Close()
+	defer object.Body.Close()
 
 	dest, err := os.Create(destPath)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(dest, object)
+	_, copyErr := io.Copy(dest, object.Body)
 	closeErr := dest.Close()
 	if copyErr != nil {
 		return copyErr
@@ -232,8 +236,12 @@ func (h *WharfHandlers) uploadObject(ctx context.Context, sourcePath string, obj
 		return err
 	}
 	defer source.Close()
-	_, err = h.minioClient.PutObject(ctx, h.bucketName, objectName, source, size, minio.PutObjectOptions{
-		ContentType: contentType,
+	_, err = h.storageClient.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(h.bucketName),
+		Key:           aws.String(objectName),
+		Body:          source,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
 	})
 	return err
 }

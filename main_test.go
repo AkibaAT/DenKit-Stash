@@ -20,29 +20,59 @@ func newTestMainDatabase(t *testing.T) models.Database {
 	return testdb.New(t)
 }
 
-func TestInitializeMinIORequiresExplicitConnectionSettings(t *testing.T) {
-	t.Setenv("MINIO_ENDPOINT", "")
-	t.Setenv("MINIO_ACCESS_KEY", "")
-	t.Setenv("MINIO_SECRET_KEY", "")
-	t.Setenv("MINIO_BUCKET", "")
+func TestInitializeObjectStorageRequiresExplicitConnectionSettings(t *testing.T) {
+	t.Setenv("S3_ENDPOINT", "")
+	t.Setenv("S3_ACCESS_KEY", "")
+	t.Setenv("S3_SECRET_KEY", "")
+	t.Setenv("S3_BUCKET", "")
 
-	if _, _, err := initializeMinIO(); err == nil {
-		t.Fatal("expected missing MinIO endpoint to fail")
+	if _, err := initializeObjectStorage(); err == nil {
+		t.Fatal("expected missing storage endpoint to fail")
 	}
 
-	t.Setenv("MINIO_ENDPOINT", "localhost:9000")
-	if _, _, err := initializeMinIO(); err == nil {
-		t.Fatal("expected missing MinIO access key to fail")
+	t.Setenv("S3_ENDPOINT", "localhost:9000")
+	if _, err := initializeObjectStorage(); err == nil {
+		t.Fatal("expected missing storage access key to fail")
 	}
 
-	t.Setenv("MINIO_ACCESS_KEY", "access")
-	if _, _, err := initializeMinIO(); err == nil {
-		t.Fatal("expected missing MinIO secret key to fail")
+	t.Setenv("S3_ACCESS_KEY", "access")
+	if _, err := initializeObjectStorage(); err == nil {
+		t.Fatal("expected missing storage secret key to fail")
 	}
 
-	t.Setenv("MINIO_SECRET_KEY", "secret")
-	if _, _, err := initializeMinIO(); err == nil {
-		t.Fatal("expected missing MinIO bucket to fail")
+	t.Setenv("S3_SECRET_KEY", "secret")
+	if _, err := initializeObjectStorage(); err == nil {
+		t.Fatal("expected missing storage bucket to fail")
+	}
+}
+
+func TestStorageConfigReadsS3Environment(t *testing.T) {
+	t.Setenv("S3_ENDPOINT", "storage:9000")
+	t.Setenv("S3_PUBLIC_ENDPOINT", "https://storage.example.test")
+	t.Setenv("S3_ACCESS_KEY", "storage-access")
+	t.Setenv("S3_SECRET_KEY", "storage-secret")
+	t.Setenv("S3_BUCKET", "storage-bucket")
+	t.Setenv("S3_USE_SSL", "true")
+
+	cfg, err := readStorageConfig()
+	if err != nil {
+		t.Fatalf("read storage config: %v", err)
+	}
+	if cfg.endpoint != "storage:9000" || cfg.publicEndpoint != "https://storage.example.test" || cfg.accessKey != "storage-access" || cfg.secretKey != "storage-secret" || cfg.bucketName != "storage-bucket" || !cfg.useSSL {
+		t.Fatalf("unexpected storage config: %#v", cfg)
+	}
+}
+
+func TestStorageConfigIgnoresNonS3EnvironmentNames(t *testing.T) {
+	t.Setenv("S3_ENDPOINT", "")
+	t.Setenv("S3_PUBLIC_ENDPOINT", "")
+	t.Setenv("S3_ACCESS_KEY", "")
+	t.Setenv("S3_SECRET_KEY", "")
+	t.Setenv("S3_BUCKET", "")
+	t.Setenv("S3_USE_SSL", "")
+
+	if _, err := readStorageConfig(); err == nil {
+		t.Fatal("expected storage config without S3_* values to fail")
 	}
 }
 
@@ -153,20 +183,20 @@ func TestAPIKeysAreStoredAsDigests(t *testing.T) {
 	}
 }
 
-func TestDevMinIOTestRouteRequiresAuthentication(t *testing.T) {
+func TestDevStorageTestRouteRequiresAuthentication(t *testing.T) {
 	db := newTestMainDatabase(t)
 	defer db.Close()
 
 	router, api := newTestHumaRouter()
-	registerRaw[minioTestResponse](api, authOperation("dev-minio-test", http.MethodGet, "/test/minio", "Development-only MinIO smoke test", "Development", 401, 500), authHandler(db, devMinIOTestHandler(nil, "test-bucket")))
+	registerRaw[storageTestResponse](api, authOperation("dev-storage-test", http.MethodGet, "/test/storage", "Development-only object storage smoke test", "Development", 401, 500), authHandler(db, devObjectStorageTestHandler(nil, nil, "test-bucket")))
 
-	req := httptest.NewRequest(http.MethodGet, "/test/minio", nil)
+	req := httptest.NewRequest(http.MethodGet, "/test/storage", nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthenticated MinIO test route to return 401, got %d", rec.Code)
+		t.Fatalf("expected unauthenticated storage test route to return 401, got %d", rec.Code)
 	}
 }
 
@@ -177,9 +207,9 @@ func TestDevCredentialMintingRoutesAreNotRegisteredByDefault(t *testing.T) {
 	defer db.Close()
 
 	router, api := newTestHumaRouter()
-	registerDevRoutes(api, db, nil, "test-bucket")
+	registerDevRoutes(api, db, nil, nil, "test-bucket")
 
-	for _, path := range []string{"/oauth/authorize", "/user/oauth", "/test/minio"} {
+	for _, path := range []string{"/oauth/authorize", "/user/oauth", "/test/storage"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 

@@ -17,12 +17,12 @@ web_environment:
     - POSTGRES_DB=db
     - POSTGRES_USER=db
     - POSTGRES_PASSWORD=db
-    - MINIO_ENDPOINT=minio:9000
-    - MINIO_PUBLIC_ENDPOINT=http://minio:9000
-    - MINIO_ACCESS_KEY=ddevminio
-    - MINIO_SECRET_KEY=ddevminio
-    - MINIO_BUCKET=denkit-storage
-    - MINIO_USE_SSL=false
+    - S3_ENDPOINT=rustfs:9000
+    - S3_PUBLIC_ENDPOINT=http://rustfs:9000
+    - S3_ACCESS_KEY=ddevrustfs
+    - S3_SECRET_KEY=ddevrustfs
+    - S3_BUCKET=denkit-storage
+    - S3_USE_SSL=false
     - DENKIT_API_KEY_HASH_SECRET=denkit-ddev-api-key-hash-secret
 corepack_enable: false
 # Custom web build with latest Go and tools
@@ -39,10 +39,3 @@ web_extra_daemons:
 hooks:
   pre-start:
     - exec-host: "go build -v -o denkit-stash ."
-  post-start:
-    - exec: "echo 'Setting up MinIO client alias...'"
-    - exec: "mc alias set minio http://minio:9000 ddevminio ddevminio || echo 'MinIO alias setup failed'"
-    - exec: "echo 'Creating MinIO bucket...'"
-    - exec: "mc mb minio/denkit-storage || echo 'Bucket already exists or will be created by application'"
-    - exec: "echo 'Keeping MinIO bucket private; downloads must use application-generated signed URLs...'"
-    - exec: "mc anonymous set none minio/denkit-storage || echo 'Bucket policy will remain private by default'"

@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gorilla/mux"
-	"github.com/minio/minio-go/v7"
 )
 
 // POST /wharf/upload-sessions/{id} starts a deferred resumable upload session.
@@ -183,8 +184,12 @@ func (h *WharfHandlers) commitUploadSession(ctx context.Context, session *models
 	}
 	defer file.Close()
 
-	_, err = h.minioClient.PutObject(ctx, h.bucketName, session.StoragePath, file, session.Size, minio.PutObjectOptions{
-		ContentType: "application/octet-stream",
+	_, err = h.storageClient.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(h.bucketName),
+		Key:           aws.String(session.StoragePath),
+		Body:          file,
+		ContentLength: aws.Int64(session.Size),
+		ContentType:   aws.String("application/octet-stream"),
 	})
 	if err != nil {
 		return fmt.Errorf("could not store completed upload: %w", err)

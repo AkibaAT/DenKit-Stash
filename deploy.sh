@@ -13,7 +13,7 @@ docker compose build --no-cache denkit-stash
 
 echo "Creating volumes if needed..."
 docker volume create "${DB_VOLUME_NAME}" >/dev/null
-docker volume create "${MINIO_VOLUME_NAME}" >/dev/null
+docker volume create "${RUSTFS_VOLUME_NAME}" >/dev/null
 
 echo "Restarting services..."
 docker compose down
@@ -31,5 +31,5 @@ fi
 echo "Deployment completed."
 echo "DenKit Stash: https://${DENKIT_SUBDOMAIN}.${DOMAIN}"
 echo "DenKit Stash API: https://${DENKIT_API_SUBDOMAIN}.${DOMAIN}"
-echo "MinIO Storage: https://${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}"
-echo "MinIO Console: SSH tunnel to localhost:9001"
+echo "RustFS Storage: https://${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}"
+echo "RustFS Console: SSH tunnel to localhost:9001"

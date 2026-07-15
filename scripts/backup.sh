@@ -11,7 +11,7 @@ mkdir -p "${BACKUP_DIR}"
 echo "Writing backup to ${BACKUP_DIR}"
 
 docker compose exec -T db pg_dump -U "${POSTGRES_USER}" "${POSTGRES_DB}" >"${BACKUP_DIR}/database.sql"
-docker compose exec -T minio mc mirror --overwrite /data "${BACKUP_DIR}/minio/"
+docker compose exec -T rustfs tar -C /data -cf - . >"${BACKUP_DIR}/rustfs-data.tar"
 
 cp .env "${BACKUP_DIR}/env.backup"
 cp docker-compose.yml "${BACKUP_DIR}/"

@@ -11,12 +11,12 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
-      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_BUCKET=${MINIO_BUCKET}
-      - MINIO_USE_SSL=${MINIO_USE_SSL}
+      - S3_ENDPOINT=${S3_ENDPOINT}
+      - S3_PUBLIC_ENDPOINT=${S3_PUBLIC_ENDPOINT}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - S3_BUCKET=${S3_BUCKET}
+      - S3_USE_SSL=${S3_USE_SSL}
       - PORT=${PORT}
       - GIN_MODE=${GIN_MODE}
       - LOG_LEVEL=${LOG_LEVEL}
@@ -38,7 +38,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
     networks:
       - default
@@ -76,16 +76,19 @@ services:
       retries: 5
       start_period: 30s
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-    container_name: denkit-minio
+  rustfs:
+    image: rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3
+    container_name: denkit-rustfs
     restart: unless-stopped
     environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-    command: server /data --console-address ":9001"
+      - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY}
+      - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY}
+      - RUSTFS_ADDRESS=:9000
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_SERVER_DOMAINS=${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}
+    command: ["--address", ":9000", "--console-enable", "--server-domains", "${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}", "/data"]
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data
     networks:
       - default
       - traefik
@@ -94,13 +97,13 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=${TRAEFIK_NETWORK}"
-      - "traefik.http.services.minio-api.loadbalancer.server.port=9000"
-      - "traefik.http.routers.minio-api.rule=Host(`${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}`)"
-      - "traefik.http.routers.minio-api.entrypoints=websecure"
-      - "traefik.http.routers.minio-api.tls=true"
-      - "traefik.http.routers.minio-api.service=minio-api"
+      - "traefik.http.services.rustfs-api.loadbalancer.server.port=9000"
+      - "traefik.http.routers.rustfs-api.rule=Host(`${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}`)"
+      - "traefik.http.routers.rustfs-api.entrypoints=websecure"
+      - "traefik.http.routers.rustfs-api.tls=true"
+      - "traefik.http.routers.rustfs-api.service=rustfs-api"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -109,8 +112,8 @@ services:
 volumes:
   postgres_data:
     name: ${DB_VOLUME_NAME}
-  minio_data:
-    name: ${MINIO_VOLUME_NAME}
+  rustfs_data:
+    name: ${RUSTFS_VOLUME_NAME}
 
 networks:
   traefik:

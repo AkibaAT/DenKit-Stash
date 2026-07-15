@@ -45,6 +45,18 @@ backups/
 
 # Development files
 .ddev/
+!.ddev/
+.ddev/*
+!.ddev/config.yaml
+!.ddev/docker-compose.rustfs.yaml
+!.ddev/web-build/
+.ddev/web-build/*
+!.ddev/web-build/Dockerfile
+!.ddev/commands/
+.ddev/commands/*
+!.ddev/commands/host/
+.ddev/commands/host/*
+!.ddev/commands/host/rustfs
 simple-denkit-stash/
 fetch-test-*/
 

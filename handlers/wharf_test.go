@@ -40,7 +40,7 @@ func newTestWharfHandler(t *testing.T) (*WharfHandlers, models.Database, *models
 		t.Fatalf("create channel: %v", err)
 	}
 
-	return NewWharfHandlers(db, nil, "test-bucket"), db, upload, channel
+	return NewWharfHandlers(db, nil, nil, "test-bucket"), db, upload, channel
 }
 
 func createBuild(t *testing.T, db models.Database, uploadID int64, parentBuildID *int64) *models.Build {

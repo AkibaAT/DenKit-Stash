@@ -5,12 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/denkit-contract.XXXXXX")}"
 SERVER_PORT="${SERVER_PORT:-18080}"
 SERVER_URL="${SERVER_URL:-http://127.0.0.1:${SERVER_PORT}}"
-MINIO_PORT="${MINIO_PORT:-19000}"
-MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-19001}"
-MINIO_CONTAINER="${MINIO_CONTAINER:-denkit-contract-minio-$$}"
-MINIO_BUCKET="${MINIO_BUCKET:-denkit-contract-$$}"
-MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-ddevminio}"
-MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-ddevminio}"
+RUSTFS_PORT="${RUSTFS_PORT:-19000}"
+RUSTFS_CONSOLE_PORT="${RUSTFS_CONSOLE_PORT:-19001}"
+RUSTFS_CONTAINER="${RUSTFS_CONTAINER:-denkit-contract-rustfs-$$}"
+S3_BUCKET="${S3_BUCKET:-denkit-contract-$$}"
+S3_ACCESS_KEY="${S3_ACCESS_KEY:-ddevrustfs}"
+S3_SECRET_KEY="${S3_SECRET_KEY:-ddevrustfs}"
 POSTGRES_PORT="${POSTGRES_PORT:-15432}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-denkit-contract-postgres-$$}"
 POSTGRES_DB="${POSTGRES_DB:-denkit_contract}"
@@ -26,7 +26,7 @@ cleanup() {
 		kill "${SERVER_PID}" 2>/dev/null || true
 		wait "${SERVER_PID}" 2>/dev/null || true
 	fi
-	docker stop "${MINIO_CONTAINER}" >/dev/null 2>&1 || true
+	docker stop "${RUSTFS_CONTAINER}" >/dev/null 2>&1 || true
 	docker stop "${POSTGRES_CONTAINER}" >/dev/null 2>&1 || true
 	if [[ "${KEEP_WORK_DIR:-}" != "1" ]]; then
 		rm -rf "${WORK_DIR}"
@@ -101,15 +101,16 @@ if [[ ! -x "${BUTLER_BIN}" ]]; then
 	chmod +x "${BUTLER_BIN}"
 fi
 
-echo "starting MinIO"
+echo "starting RustFS"
 docker run --rm -d \
-	--name "${MINIO_CONTAINER}" \
-	-p "127.0.0.1:${MINIO_PORT}:9000" \
-	-p "127.0.0.1:${MINIO_CONSOLE_PORT}:9001" \
-	-e "MINIO_ROOT_USER=${MINIO_ACCESS_KEY}" \
-	-e "MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}" \
-	quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data --console-address :9001 >/dev/null
-wait_for_http "http://127.0.0.1:${MINIO_PORT}/minio/health/live"
+	--name "${RUSTFS_CONTAINER}" \
+	-p "127.0.0.1:${RUSTFS_PORT}:9000" \
+	-p "127.0.0.1:${RUSTFS_CONSOLE_PORT}:9001" \
+	-e "RUSTFS_ACCESS_KEY=${S3_ACCESS_KEY}" \
+	-e "RUSTFS_SECRET_KEY=${S3_SECRET_KEY}" \
+	-e "RUSTFS_CONSOLE_ENABLE=true" \
+	rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3 --address :9000 --console-enable /data >/dev/null
+wait_for_http "http://127.0.0.1:${RUSTFS_PORT}/health"
 
 echo "starting PostgreSQL"
 docker run --rm -d \
@@ -128,11 +129,12 @@ SERVER_ENV=(
 	"POSTGRES_USER=${POSTGRES_USER}"
 	"POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
 	"POSTGRES_SSLMODE=disable"
-	"MINIO_ENDPOINT=127.0.0.1:${MINIO_PORT}"
-	"MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}"
-	"MINIO_SECRET_KEY=${MINIO_SECRET_KEY}"
-	"MINIO_BUCKET=${MINIO_BUCKET}"
-	"MINIO_USE_SSL=false"
+	"S3_ENDPOINT=127.0.0.1:${RUSTFS_PORT}"
+	"S3_PUBLIC_ENDPOINT=http://127.0.0.1:${RUSTFS_PORT}"
+	"S3_ACCESS_KEY=${S3_ACCESS_KEY}"
+	"S3_SECRET_KEY=${S3_SECRET_KEY}"
+	"S3_BUCKET=${S3_BUCKET}"
+	"S3_USE_SSL=false"
 	"DENKIT_API_KEY_HASH_SECRET=denkit-contract-api-key-hash-secret"
 )
 

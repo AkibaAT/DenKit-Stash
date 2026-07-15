@@ -13,7 +13,7 @@ import (
 func main() {
 	router := mux.NewRouter()
 	api := humamux.New(router, newAPIConfig())
-	registerDenKitAPI(api, nil, handlers.NewCoreHandlers(nil), handlers.NewWharfHandlers(nil, nil, ""))
+	registerDenKitAPI(api, nil, handlers.NewCoreHandlers(nil), handlers.NewWharfHandlers(nil, nil, nil, ""))
 
 	data, err := api.OpenAPI().YAML()
 	if err != nil {

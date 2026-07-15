@@ -2,7 +2,7 @@
 
 DenKit is a self-hosted publishing kit for independent game developers and small studios. DenKit Stash is the backend for build uploads, artifact storage, update metadata, project metadata APIs, and desktop-client compatibility.
 
-The server starts with compatibility for the MIT-licensed [`butler`](https://github.com/itchio/butler) client and its upload/update workflows by implementing server-side behavior for the MIT-licensed itch.io [`wharf`](https://github.com/itchio/wharf) protocol. It stores metadata in PostgreSQL, stores artifacts in MinIO/S3-compatible object storage, and exposes the endpoints needed for push, status, fetch, downloads, and upgrade paths.
+The server starts with compatibility for the MIT-licensed [`butler`](https://github.com/itchio/butler) client and its upload/update workflows by implementing server-side behavior for the MIT-licensed itch.io [`wharf`](https://github.com/itchio/wharf) protocol. It stores metadata in PostgreSQL, stores artifacts in RustFS/S3-compatible object storage, and exposes the endpoints needed for push, status, fetch, downloads, and upgrade paths.
 
 ## Compatibility Notice
 
@@ -16,20 +16,20 @@ DenKit is independent software and is not an official itch.io service, product, 
 - Game and project metadata endpoints for client and web integrations
 - Parent build tracking and channel heads
 - Upgrade-path endpoint for client update flows
-- Private MinIO/S3 storage with signed upload and download URLs
+- Private RustFS/S3-compatible storage with signed upload and download URLs
 - API-key authentication with user/admin namespace checks
 - Local DDEV environment and Docker production compose files
 
 ## Requirements
 
-- Go 1.26.3 or newer
+- Go 1.26.5 or newer
 - PostgreSQL for normal deployments
-- MinIO or an S3-compatible service
+- RustFS or another S3-compatible service
 - Docker for the contract test and production compose workflow
 
 ## Local Development
 
-The DDEV setup starts PostgreSQL, MinIO, and the Go service with the required environment variables.
+The DDEV setup starts PostgreSQL, RustFS, and the Go service with the required environment variables.
 
 ```bash
 ddev start
@@ -62,25 +62,40 @@ The channel name is the part after `:`. In the example above, `main` is a releas
 
 ## Storage And Tokens
 
-DenKit requires PostgreSQL, MinIO/S3 storage, and a DenKit Stash API key before clients can push builds.
+DenKit requires PostgreSQL, S3-compatible object storage, and a DenKit Stash API key before clients can push builds.
+
+The application talks to object storage through the official AWS SDK for Go v2 with path-style S3 endpoints enabled. RustFS is the bundled object-store service, but any compatible S3 implementation can be used with the same `S3_*` settings.
 
 Storage setup:
 
-- Set `MINIO_ENDPOINT` to the internal S3 endpoint the server can reach.
-- Set `MINIO_PUBLIC_ENDPOINT` to the externally reachable S3 endpoint used in signed upload and download URLs.
-- Set `MINIO_BUCKET` to the private bucket DenKit should use for build files.
-- Set `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` to credentials with read, write, and multipart-upload access for that bucket.
+- Set `S3_ENDPOINT` to the internal S3 endpoint the server can reach.
+- Set `S3_PUBLIC_ENDPOINT` to the externally reachable S3 endpoint used in signed upload and download URLs.
+- Set `S3_BUCKET` to the private bucket DenKit should use for build files.
+- Set `S3_ACCESS_KEY` and `S3_SECRET_KEY` to credentials with read, write, and multipart-upload access for that bucket.
 
-At startup, DenKit checks whether `MINIO_BUCKET` exists. If the configured credentials can create buckets, DenKit creates it automatically. DenKit then removes any bucket policy so objects stay private and are only exposed through signed upload and download URLs. The configured credentials therefore need bucket policy management permission in addition to object read/write permissions.
+At startup, DenKit checks whether `S3_BUCKET` exists. If the configured credentials can create buckets, DenKit creates it automatically. DenKit then removes any bucket policy so objects stay private and are only exposed through signed upload and download URLs. The configured credentials therefore need bucket policy management permission in addition to object read/write permissions.
 
 If you want to create the bucket manually before startup:
 
 ```bash
-docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc mb local/denkit-storage'
-docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc anonymous set none local/denkit-storage'
+docker run --rm --network denkit-network \
+  -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+  -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+  -e AWS_DEFAULT_REGION="${S3_REGION:-us-east-1}" \
+  amazon/aws-cli s3api create-bucket \
+  --endpoint-url http://rustfs:9000 \
+  --bucket "$S3_BUCKET"
+
+docker run --rm --network denkit-network \
+  -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+  -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+  -e AWS_DEFAULT_REGION="${S3_REGION:-us-east-1}" \
+  amazon/aws-cli s3api delete-bucket-policy \
+  --endpoint-url http://rustfs:9000 \
+  --bucket "$S3_BUCKET"
 ```
 
-The bundled compose setup uses `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` for the MinIO root account. You can use that account for simple private deployments, or create a narrower MinIO access key with bucket create/read/write/multipart and bucket-policy permissions, then put it in `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`.
+The bundled compose setup uses `RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` for RustFS. You can use that account for simple private deployments, or create a narrower access key with bucket create/read/write/multipart and bucket-policy permissions, then put it in `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
 
 Create a DenKit Stash API key:
 
@@ -113,14 +128,14 @@ PostgreSQL:
 - `POSTGRES_PASSWORD`
 - `POSTGRES_SSLMODE`
 
-MinIO/S3:
+S3-Compatible Storage:
 
-- `MINIO_ENDPOINT`
-- `MINIO_PUBLIC_ENDPOINT`
-- `MINIO_ACCESS_KEY`
-- `MINIO_SECRET_KEY`
-- `MINIO_BUCKET`
-- `MINIO_USE_SSL`
+- `S3_ENDPOINT`
+- `S3_PUBLIC_ENDPOINT`
+- `S3_ACCESS_KEY`
+- `S3_SECRET_KEY`
+- `S3_BUCKET`
+- `S3_USE_SSL`
 
 Application:
 
@@ -134,7 +149,7 @@ Application:
 - `DENKIT_MAX_REQUEST_BODY_BYTES`
 - `DENKIT_MAX_UPLOAD_SESSION_BYTES`
 
-Production deployments should keep `ENABLE_DEV_ENDPOINTS=false`. When set to `true`, local-only development OAuth helpers and the authenticated `/test/minio` route are registered.
+Production deployments should keep `ENABLE_DEV_ENDPOINTS=false`. When set to `true`, local-only development OAuth helpers and the authenticated `/test/storage` route are registered.
 
 `DENKIT_API_KEY_HASH_SECRET` is required before creating or authenticating users. It is used to store non-reversible HMAC-SHA256 digests of API keys instead of raw bearer credentials. Generate a unique secret per deployment, for example with `openssl rand -hex 32`, and keep it with the rest of the deployment secrets. Existing raw keys from early development databases are converted to digests on startup when this secret is configured.
 

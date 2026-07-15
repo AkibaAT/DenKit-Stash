@@ -1,0 +1,41 @@
+services:
+  rustfs:
+    container_name: ddev-${DDEV_SITENAME}-rustfs
+    image: ${RUSTFS_DOCKER_IMAGE:-rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3}
+    environment:
+      RUSTFS_ACCESS_KEY: ddevrustfs
+      RUSTFS_SECRET_KEY: ddevrustfs
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_REGION: us-east-1
+    command: ["--address", ":9000", "--console-enable", "/data"]
+    volumes:
+      - "rustfs:/data"
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "127.0.0.1:9090:9001"
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}
+      com.ddev.approot: ${DDEV_APPROOT}
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "1024M"
+        reservations:
+            cpus: "1.5"
+            memory: "512M"
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rustfs:
+    name: ddev-${DDEV_SITENAME}-rustfs
+    labels:
+      com.ddev.site-name: ${DDEV_SITENAME}

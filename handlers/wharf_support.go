@@ -12,7 +12,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/minio/minio-go/v7"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var channelPlatformRules = []struct {
@@ -118,9 +119,10 @@ func writeBuildAccessError(w http.ResponseWriter, r *http.Request) {
 }
 
 type WharfHandlers struct {
-	db          models.Database
-	minioClient *minio.Client
-	bucketName  string
+	db            models.Database
+	storageClient *s3.Client
+	presignClient *s3.PresignClient
+	bucketName    string
 }
 
 var (
@@ -128,8 +130,11 @@ var (
 	emptyFinalRangePattern = regexp.MustCompile(`^bytes (\d+)--1/(\d+)$`)
 )
 
-func NewWharfHandlers(db models.Database, minioClient *minio.Client, bucketName string) *WharfHandlers {
-	return &WharfHandlers{db: db, minioClient: minioClient, bucketName: bucketName}
+func NewWharfHandlers(db models.Database, storageClient *s3.Client, presignClient *s3.PresignClient, bucketName string) *WharfHandlers {
+	if presignClient == nil && storageClient != nil {
+		presignClient = s3.NewPresignClient(storageClient)
+	}
+	return &WharfHandlers{db: db, storageClient: storageClient, presignClient: presignClient, bucketName: bucketName}
 }
 
 func (h *WharfHandlers) absoluteURL(r *http.Request, path string) string {
@@ -145,33 +150,52 @@ func (h *WharfHandlers) absoluteURL(r *http.Request, path string) string {
 
 func (h *WharfHandlers) GetPresignedUploadURL(objectName string, expiry time.Duration) (string, error) {
 	ctx := context.Background()
-	presignedURL, err := h.minioClient.PresignedPutObject(ctx, h.bucketName, objectName, expiry)
+	presignedURL, err := h.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(h.bucketName),
+		Key:    aws.String(objectName),
+	}, func(options *s3.PresignOptions) {
+		options.Expires = expiry
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to generate presigned upload URL: %v", err)
 	}
-	return presignedURL.String(), nil
+	return presignedURL.URL, nil
 }
 
 func (h *WharfHandlers) FileExists(objectName string) bool {
 	ctx := context.Background()
-	_, err := h.minioClient.StatObject(ctx, h.bucketName, objectName, minio.StatObjectOptions{})
+	_, err := h.storageClient.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(h.bucketName),
+		Key:    aws.String(objectName),
+	})
 	return err == nil
 }
 
 func (h *WharfHandlers) GetFileSize(objectName string) (int64, error) {
 	ctx := context.Background()
-	stat, err := h.minioClient.StatObject(ctx, h.bucketName, objectName, minio.StatObjectOptions{})
+	stat, err := h.storageClient.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(h.bucketName),
+		Key:    aws.String(objectName),
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to get object stat: %v", err)
 	}
-	return stat.Size, nil
+	if stat.ContentLength == nil {
+		return 0, fmt.Errorf("object stat did not include content length")
+	}
+	return *stat.ContentLength, nil
 }
 
 func (h *WharfHandlers) GetSignedURL(objectName string, expiry time.Duration) (string, error) {
 	ctx := context.Background()
-	presignedURL, err := h.minioClient.PresignedGetObject(ctx, h.bucketName, objectName, expiry, nil)
+	presignedURL, err := h.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(h.bucketName),
+		Key:    aws.String(objectName),
+	}, func(options *s3.PresignOptions) {
+		options.Expires = expiry
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed URL: %v", err)
 	}
-	return presignedURL.String(), nil
+	return presignedURL.URL, nil
 }

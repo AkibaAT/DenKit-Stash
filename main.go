@@ -6,6 +6,7 @@ import (
 	"denkit-stash/handlers"
 	"denkit-stash/models"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -13,63 +14,174 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humamux"
 	"github.com/gorilla/mux"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-func initializeMinIO() (*minio.Client, string, error) {
-	endpoint := os.Getenv("MINIO_ENDPOINT")
-	accessKey := os.Getenv("MINIO_ACCESS_KEY")
-	secretKey := os.Getenv("MINIO_SECRET_KEY")
-	bucketName := os.Getenv("MINIO_BUCKET")
-	useSSL := getEnvOrDefault("MINIO_USE_SSL", "false") == "true"
+type storageConfig struct {
+	endpoint       string
+	publicEndpoint string
+	accessKey      string
+	secretKey      string
+	bucketName     string
+	region         string
+	useSSL         bool
+}
 
-	if endpoint == "" {
-		return nil, "", fmt.Errorf("MINIO_ENDPOINT environment variable is required")
-	}
-	if accessKey == "" {
-		return nil, "", fmt.Errorf("MINIO_ACCESS_KEY environment variable is required")
-	}
-	if secretKey == "" {
-		return nil, "", fmt.Errorf("MINIO_SECRET_KEY environment variable is required")
-	}
-	if bucketName == "" {
-		return nil, "", fmt.Errorf("MINIO_BUCKET environment variable is required")
-	}
+type objectStorageClients struct {
+	client        *s3.Client
+	presignClient *s3.PresignClient
+	bucketName    string
+	config        storageConfig
+}
 
-	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: useSSL,
-	})
+func readStorageConfig() (storageConfig, error) {
+	useSSLValue := os.Getenv("S3_USE_SSL")
+	if useSSLValue == "" {
+		useSSLValue = "false"
+	}
+	useSSL, err := strconv.ParseBool(useSSLValue)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create MinIO client: %v", err)
+		return storageConfig{}, fmt.Errorf("S3_USE_SSL must be true or false")
+	}
+
+	cfg := storageConfig{
+		endpoint:       os.Getenv("S3_ENDPOINT"),
+		publicEndpoint: os.Getenv("S3_PUBLIC_ENDPOINT"),
+		accessKey:      os.Getenv("S3_ACCESS_KEY"),
+		secretKey:      os.Getenv("S3_SECRET_KEY"),
+		bucketName:     os.Getenv("S3_BUCKET"),
+		region:         getEnvOrDefault("S3_REGION", "us-east-1"),
+		useSSL:         useSSL,
+	}
+	if cfg.endpoint == "" {
+		return cfg, fmt.Errorf("S3_ENDPOINT environment variable is required")
+	}
+	if cfg.accessKey == "" {
+		return cfg, fmt.Errorf("S3_ACCESS_KEY environment variable is required")
+	}
+	if cfg.secretKey == "" {
+		return cfg, fmt.Errorf("S3_SECRET_KEY environment variable is required")
+	}
+	if cfg.bucketName == "" {
+		return cfg, fmt.Errorf("S3_BUCKET environment variable is required")
+	}
+	return cfg, nil
+}
+
+func endpointURLForS3Client(rawEndpoint string, fallbackUseSSL bool) (string, error) {
+	parsed, err := url.Parse(rawEndpoint)
+	if err == nil && parsed.Scheme != "" {
+		if parsed.Host == "" || parsed.Path != "" {
+			return "", fmt.Errorf("invalid S3 endpoint %q", rawEndpoint)
+		}
+		switch parsed.Scheme {
+		case "http", "https":
+			return rawEndpoint, nil
+		default:
+			return "", fmt.Errorf("unsupported S3 endpoint scheme %q", parsed.Scheme)
+		}
+	}
+	scheme := "http"
+	if fallbackUseSSL {
+		scheme = "https"
+	}
+	return scheme + "://" + rawEndpoint, nil
+}
+
+func newStorageClient(ctx context.Context, endpoint string, useSSL bool, cfg storageConfig) (*s3.Client, error) {
+	endpointURL, err := endpointURLForS3Client(endpoint, useSSL)
+	if err != nil {
+		return nil, err
+	}
+
+	awsConfig, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(cfg.region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.accessKey, cfg.secretKey, "")),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AWS SDK config: %v", err)
+	}
+
+	return s3.NewFromConfig(awsConfig, func(options *s3.Options) {
+		options.BaseEndpoint = aws.String(endpointURL)
+		options.UsePathStyle = true
+	}), nil
+}
+
+func initializeObjectStorage() (*objectStorageClients, error) {
+	cfg, err := readStorageConfig()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx := context.Background()
-	exists, err := client.BucketExists(ctx, bucketName)
+	client, err := newStorageClient(ctx, cfg.endpoint, cfg.useSSL, cfg)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to check if bucket exists: %v", err)
+		return nil, err
 	}
-
-	if !exists {
-		err = client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+	presignS3Client := client
+	if cfg.publicEndpoint != "" && cfg.publicEndpoint != cfg.endpoint {
+		presignS3Client, err = newStorageClient(ctx, cfg.publicEndpoint, cfg.useSSL, cfg)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to create bucket: %v", err)
+			return nil, fmt.Errorf("failed to create public S3-compatible storage client: %v", err)
 		}
-		fmt.Printf("Created MinIO bucket: %s\n", bucketName)
+	}
+	presignClient := s3.NewPresignClient(presignS3Client)
+
+	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(cfg.bucketName)})
+	if err != nil && !isNotFoundError(err) {
+		return nil, fmt.Errorf("failed to check if bucket exists: %v", err)
 	}
 
-	if err = client.SetBucketPolicy(ctx, bucketName, ""); err != nil {
-		return nil, "", fmt.Errorf("failed to enforce private bucket policy: %v", err)
+	if err != nil {
+		if _, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(cfg.bucketName)}); err != nil {
+			return nil, fmt.Errorf("failed to create bucket: %v", err)
+		}
+		fmt.Printf("Created storage bucket: %s\n", cfg.bucketName)
 	}
 
-	return client, bucketName, nil
+	if _, err = client.DeleteBucketPolicy(ctx, &s3.DeleteBucketPolicyInput{Bucket: aws.String(cfg.bucketName)}); err != nil && !isNoSuchBucketPolicyError(err) {
+		return nil, fmt.Errorf("failed to enforce private bucket policy: %v", err)
+	}
+
+	return &objectStorageClients{client: client, presignClient: presignClient, bucketName: cfg.bucketName, config: cfg}, nil
+}
+
+func isNotFoundError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.ErrorCode() {
+	case "NotFound", "NoSuchBucket", "404":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNoSuchBucketPolicyError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.ErrorCode() {
+	case "NoSuchBucketPolicy", "NoSuchBucketPolicyException", "NotFound", "404":
+		return true
+	default:
+		return false
+	}
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -117,21 +229,30 @@ func newHTTPServer(address string, handler http.Handler) *http.Server {
 	}
 }
 
-func devMinIOTestHandler(minioClient *minio.Client, bucketName string) http.HandlerFunc {
+func devObjectStorageTestHandler(storageClient *s3.Client, presignClient *s3.PresignClient, bucketName string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		testContent := "Hello from MinIO! This is a test file."
+		testContent := "Hello from S3-compatible storage! This is a test file."
 		objectName := "test/hello.txt"
 
 		ctx := context.Background()
-		_, err := minioClient.PutObject(ctx, bucketName, objectName, strings.NewReader(testContent), int64(len(testContent)), minio.PutObjectOptions{
-			ContentType: "text/plain",
+		_, err := storageClient.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:        aws.String(bucketName),
+			Key:           aws.String(objectName),
+			Body:          strings.NewReader(testContent),
+			ContentLength: aws.Int64(int64(len(testContent))),
+			ContentType:   aws.String("text/plain"),
 		})
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to upload test file: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		signedURL, err := minioClient.PresignedGetObject(ctx, bucketName, objectName, time.Hour, nil)
+		signedURL, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(bucketName),
+			Key:    aws.String(objectName),
+		}, func(options *s3.PresignOptions) {
+			options.Expires = time.Hour
+		})
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to generate signed URL: %v", err), http.StatusInternalServerError)
 			return
@@ -140,7 +261,7 @@ func devMinIOTestHandler(minioClient *minio.Client, bucketName string) http.Hand
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"message":      "Test file uploaded successfully",
-			"signed_url":   signedURL.String(),
+			"signed_url":   signedURL.URL,
 			"expires_in":   "1 hour",
 			"test_content": testContent,
 		})
@@ -196,13 +317,13 @@ func devOAuthHandler(db models.Database) http.HandlerFunc {
 	}
 }
 
-func registerDevRoutes(api huma.API, db models.Database, minioClient *minio.Client, bucketName string) {
+func registerDevRoutes(api huma.API, db models.Database, storageClient *s3.Client, presignClient *s3.PresignClient, bucketName string) {
 	if !devEndpointsEnabled() {
 		return
 	}
 
 	fmt.Println("Development endpoints enabled")
-	registerRaw[minioTestResponse](api, authOperation("dev-minio-test", http.MethodGet, "/test/minio", "Development-only MinIO smoke test", "Development", 401, 500), authHandler(db, devMinIOTestHandler(minioClient, bucketName)))
+	registerRaw[storageTestResponse](api, authOperation("dev-storage-test", http.MethodGet, "/test/storage", "Development-only object storage smoke test", "Development", 401, 500), authHandler(db, devObjectStorageTestHandler(storageClient, presignClient, bucketName)))
 	registerRawOperation(api, noSecurityOperation("dev-oauth-authorize", http.MethodGet, "/oauth/authorize", "Development-only OAuth compatibility redirect", "Development", 400), devOAuthHandler(db), map[int]reflect.Type{302: reflect.TypeOf("")})
 	registerRawOperation(api, noSecurityOperation("dev-user-oauth", http.MethodGet, "/user/oauth", "Development-only OAuth compatibility redirect", "Development", 400), devOAuthHandler(db), map[int]reflect.Type{302: reflect.TypeOf("")})
 }
@@ -228,12 +349,12 @@ func main() {
 	}
 	defer db.Close()
 
-	fmt.Println("Using MinIO storage")
-	minioClient, bucketName, err := initializeMinIO()
+	fmt.Println("Using S3-compatible object storage")
+	storage, err := initializeObjectStorage()
 	if err != nil {
-		log.Fatalf("Failed to initialize MinIO: %v", err)
+		log.Fatalf("Failed to initialize object storage: %v", err)
 	}
-	fmt.Printf("MinIO initialized with endpoint: %s, bucket: %s\n", os.Getenv("MINIO_ENDPOINT"), bucketName)
+	fmt.Printf("Object storage initialized with endpoint: %s, bucket: %s\n", storage.config.endpoint, storage.bucketName)
 
 	if *createUser != "" {
 		_, err := auth.CreateUser(db, *createUser, "user")
@@ -292,7 +413,7 @@ func main() {
 	}
 
 	coreHandlers := handlers.NewCoreHandlers(db)
-	wharfHandlers := handlers.NewWharfHandlers(db, minioClient, bucketName)
+	wharfHandlers := handlers.NewWharfHandlers(db, storage.client, storage.presignClient, storage.bucketName)
 
 	r := mux.NewRouter()
 
@@ -315,11 +436,11 @@ func main() {
 
 	api := humamux.New(r, newAPIConfig())
 	registerDenKitAPI(api, db, coreHandlers, wharfHandlers)
-	registerDevRoutes(api, db, minioClient, bucketName)
+	registerDevRoutes(api, db, storage.client, storage.presignClient, storage.bucketName)
 
 	fmt.Printf("Starting server on port %s\n", *port)
 	fmt.Printf("Database: PostgreSQL (%s:%s/%s)\n", os.Getenv("POSTGRES_HOST"), os.Getenv("POSTGRES_PORT"), os.Getenv("POSTGRES_DB"))
-	fmt.Printf("Storage: MinIO (%s)\n", os.Getenv("MINIO_ENDPOINT"))
+	fmt.Printf("Storage: S3-compatible (%s)\n", storage.config.endpoint)
 	fmt.Printf("\nTo create a test user, run:\n")
 	fmt.Printf("  %s -create-user=myusername\n", os.Args[0])
 	fmt.Printf("\nThen configure butler with:\n")

@@ -18,8 +18,8 @@ curl -fsS "https://${DENKIT_SUBDOMAIN}.${DOMAIN}/" >/dev/null
 echo "Checking DenKit Stash API..."
 curl -fsS "https://${DENKIT_API_SUBDOMAIN}.${DOMAIN}/" >/dev/null
 
-echo "Checking MinIO..."
-curl -fsS "https://${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}/minio/health/live" >/dev/null
+echo "Checking RustFS..."
+curl -fsS "https://${DENKIT_STORAGE_SUBDOMAIN}.${DOMAIN}/health" >/dev/null
 
 echo "Checking PostgreSQL..."
 docker compose exec -T db pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null
