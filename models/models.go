@@ -1,6 +1,14 @@
 package models
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// BuildArchiveLock is a held advisory lock on a build's archive lifecycle.
+type BuildArchiveLock interface {
+	Release() error
+}
 
 // User represents a user account
 type User struct {
@@ -70,16 +78,20 @@ type Build struct {
 
 // BuildFile represents a file within a build
 type BuildFile struct {
-	ID          int64     `json:"id" db:"id"`
-	BuildID     int64     `json:"build_id" db:"build_id"`
-	Type        string    `json:"type" db:"type"`
-	SubType     string    `json:"sub_type" db:"sub_type"`
-	Size        int64     `json:"size" db:"size"`
-	State       string    `json:"state" db:"state"`
-	StoragePath string    `json:"storage_path" db:"storage_path"`
-	UploadURL   string    `json:"upload_url" db:"upload_url"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	ID          int64  `json:"id" db:"id"`
+	BuildID     int64  `json:"build_id" db:"build_id"`
+	Type        string `json:"type" db:"type"`
+	SubType     string `json:"sub_type" db:"sub_type"`
+	Size        int64  `json:"size" db:"size"`
+	State       string `json:"state" db:"state"`
+	StoragePath string `json:"storage_path" db:"storage_path"`
+	UploadURL   string `json:"upload_url" db:"upload_url"`
+	// LastAccessedAt drives archive cache eviction; bump it only through
+	// Database.TouchBuildFileAccess, never via UpdateBuildFile.
+	LastAccessedAt time.Time  `json:"last_accessed_at" db:"last_accessed_at"`
+	EvictedAt      *time.Time `json:"evicted_at,omitempty" db:"evicted_at"`
+	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 // Channel represents a wharf channel
@@ -138,6 +150,15 @@ type Database interface {
 	GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, error)
 	CreateBuildFile(buildFile *BuildFile) error
 	UpdateBuildFile(buildFile *BuildFile) error
+	TouchBuildFileAccess(id int64) error
+	ListEvictableArchiveFiles(lastAccessedBefore time.Time, limit int) ([]*BuildFile, error)
+	ListEvictedArchiveFilesWithStorage(limit int) ([]*BuildFile, error)
+	IsChannelHead(buildID int64) (bool, error)
+
+	// Archive locks serialize rebuild/eviction of a build's archive across
+	// processes; they are Postgres advisory locks and die with the connection.
+	AcquireBuildArchiveLock(ctx context.Context, buildID int64) (BuildArchiveLock, error)
+	TryAcquireBuildArchiveLock(ctx context.Context, buildID int64) (BuildArchiveLock, bool, error)
 
 	// Channels
 	GetChannelByName(name string, uploadID int64) (*Channel, error)

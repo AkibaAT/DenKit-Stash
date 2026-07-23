@@ -100,7 +100,7 @@ type wharfStatusResponse struct {
 type wharfBuildFileResponse struct {
 	ID        int64  `json:"id"`
 	Size      int64  `json:"size"`
-	State     string `json:"state" enum:"uploading,uploaded,failed"`
+	State     string `json:"state" enum:"uploading,uploaded,failed,evicted,rebuilding"`
 	Type      string `json:"type" enum:"archive,patch,signature"`
 	SubType   string `json:"subType" example:"default"`
 	CreatedAt string `json:"createdAt"`

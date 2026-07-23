@@ -27,6 +27,10 @@ COPY --from=builder /app/denkit-stash .
 
 RUN chown -R denkit:denkit /app
 
+# Archive staging area; compose mounts a volume here and points TMPDIR at it.
+# Creating it in the image gives a fresh named volume the right ownership.
+RUN mkdir -p /scratch && chown denkit:denkit /scratch
+
 USER denkit
 
 EXPOSE 8080

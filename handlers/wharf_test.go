@@ -15,7 +15,6 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/itchio/lake/tlc"
-	"github.com/itchio/wharf/pwr"
 )
 
 func newTestWharfHandler(t *testing.T) (*WharfHandlers, models.Database, *models.Upload, *models.Channel) {
@@ -990,9 +989,8 @@ func TestValidatePatchTargetContainerRequiresParentSignatureMatch(t *testing.T) 
 		Files: []*tlc.File{{Path: "game.txt", Size: 15}},
 		Size:  15,
 	}
-	parentSignature := &pwr.SignatureInfo{Container: parentContainer}
 
-	if err := validatePatchTargetContainer(build, parentContainer, parentSignature); err != nil {
+	if err := validatePatchTargetContainer(build, parentContainer, parentContainer); err != nil {
 		t.Fatalf("expected matching parent signature to pass: %v", err)
 	}
 	if err := validatePatchTargetContainer(build, parentContainer, nil); err == nil {
@@ -1003,7 +1001,7 @@ func TestValidatePatchTargetContainerRequiresParentSignatureMatch(t *testing.T) 
 		Files: []*tlc.File{{Path: "game.txt", Size: 16}},
 		Size:  16,
 	}
-	if err := validatePatchTargetContainer(build, mismatchedTarget, parentSignature); err == nil {
+	if err := validatePatchTargetContainer(build, mismatchedTarget, parentContainer); err == nil {
 		t.Fatalf("expected mismatched parent signature to fail")
 	}
 }

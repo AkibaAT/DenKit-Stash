@@ -218,6 +218,46 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return parsed
 }
 
+// cleanStaleScratchDirs removes archive staging directories a previous process
+// left behind after a crash. TMPDIR is a persistent disk-backed volume, so
+// unlike a tmpfs these multi-GB leftovers would otherwise accumulate forever.
+func cleanStaleScratchDirs() {
+	tempDir := os.TempDir()
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		fmt.Printf("Warning: could not scan %s for stale scratch dirs: %v\n", tempDir, err)
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "denkit-build-") || strings.HasPrefix(entry.Name(), "denkit-rebuild-") {
+			path := tempDir + string(os.PathSeparator) + entry.Name()
+			if err := os.RemoveAll(path); err != nil {
+				fmt.Printf("Warning: could not remove stale scratch dir %s: %v\n", path, err)
+			} else {
+				fmt.Printf("Removed stale scratch dir %s\n", path)
+			}
+		}
+	}
+}
+
+func archiveGCConfigFromEnv() handlers.ArchiveGCConfig {
+	cfg := handlers.DefaultArchiveGCConfig()
+	cfg.Enabled = os.Getenv("DENKIT_ARCHIVE_GC_ENABLED") == "true"
+	cfg.TTL = envDuration("DENKIT_ARCHIVE_TTL", cfg.TTL)
+	cfg.Interval = envDuration("DENKIT_ARCHIVE_GC_INTERVAL", cfg.Interval)
+	if batch := os.Getenv("DENKIT_ARCHIVE_GC_BATCH"); batch != "" {
+		if parsed, err := strconv.Atoi(batch); err == nil && parsed > 0 {
+			cfg.BatchLimit = parsed
+		} else {
+			fmt.Printf("Ignoring invalid DENKIT_ARCHIVE_GC_BATCH=%q; using %d\n", batch, cfg.BatchLimit)
+		}
+	}
+	return cfg
+}
+
 func newHTTPServer(address string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              address,
@@ -412,8 +452,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	cleanStaleScratchDirs()
+
 	coreHandlers := handlers.NewCoreHandlers(db)
 	wharfHandlers := handlers.NewWharfHandlers(db, storage.client, storage.presignClient, storage.bucketName)
+	wharfHandlers.SetArchiveRebuildTimeout(envDuration("DENKIT_ARCHIVE_REBUILD_TIMEOUT", 20*time.Minute))
+	wharfHandlers.StartArchiveGC(context.Background(), archiveGCConfigFromEnv())
 
 	r := mux.NewRouter()
 

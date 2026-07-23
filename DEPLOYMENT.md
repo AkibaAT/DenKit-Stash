@@ -97,6 +97,28 @@ docker run --rm --network denkit-network \
 
 - PostgreSQL data: `${DB_VOLUME_NAME}`
 - RustFS data: `${RUSTFS_VOLUME_NAME}`
+- Archive rebuild scratch space: `${SCRATCH_VOLUME_NAME}` (temp data only, safe to wipe when the server is stopped)
+
+## Archive Cache Eviction
+
+Full game archives are a cache: patches and signatures stored per build are
+the permanent source of truth, and any build's archive can be rebuilt on
+demand by replaying its patch chain. Eviction is **opt-in** via
+`DENKIT_ARCHIVE_GC_ENABLED=true`; until then no archive objects are ever
+deleted. Channel-head archives, patches, and signatures are never evicted.
+
+Tuning (see `.env.example`): `DENKIT_ARCHIVE_TTL` (evict archives not
+downloaded for this long, default 720h), `DENKIT_ARCHIVE_GC_INTERVAL`,
+`DENKIT_ARCHIVE_GC_BATCH`, and `DENKIT_ARCHIVE_REBUILD_TIMEOUT` (bounds one
+blocking rebuild; keep it at or below `DENKIT_HTTP_WRITE_TIMEOUT`).
+
+Archive generation and rebuilds stage the parent tree and output tree in
+`TMPDIR`, which is the disk-backed `${SCRATCH_VOLUME_NAME}` volume mounted at
+`/scratch` (games can be multiple GB, so this deliberately avoids the
+RAM-backed `/tmp` tmpfs). Make sure the volume's disk has room for roughly
+two uncompressed copies of the largest hosted game. A download that hits an
+evicted archive blocks while the chain is replayed, so clients of
+`/builds/{id}/download/archive/default` need generous timeouts.
 
 ## Maintenance
 

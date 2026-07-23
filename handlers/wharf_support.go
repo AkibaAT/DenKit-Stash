@@ -12,7 +12,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
@@ -119,10 +118,12 @@ func writeBuildAccessError(w http.ResponseWriter, r *http.Request) {
 }
 
 type WharfHandlers struct {
-	db            models.Database
-	storageClient *s3.Client
-	presignClient *s3.PresignClient
-	bucketName    string
+	db                    models.Database
+	storageClient         *s3.Client
+	presignClient         *s3.PresignClient
+	bucketName            string
+	storage               ObjectStorage
+	archiveRebuildTimeout time.Duration
 }
 
 var (
@@ -134,7 +135,11 @@ func NewWharfHandlers(db models.Database, storageClient *s3.Client, presignClien
 	if presignClient == nil && storageClient != nil {
 		presignClient = s3.NewPresignClient(storageClient)
 	}
-	return &WharfHandlers{db: db, storageClient: storageClient, presignClient: presignClient, bucketName: bucketName}
+	handlers := &WharfHandlers{db: db, storageClient: storageClient, presignClient: presignClient, bucketName: bucketName}
+	if storageClient != nil {
+		handlers.storage = newS3ObjectStorage(storageClient, presignClient, bucketName)
+	}
+	return handlers
 }
 
 func (h *WharfHandlers) absoluteURL(r *http.Request, path string) string {
@@ -149,53 +154,30 @@ func (h *WharfHandlers) absoluteURL(r *http.Request, path string) string {
 }
 
 func (h *WharfHandlers) GetPresignedUploadURL(objectName string, expiry time.Duration) (string, error) {
-	ctx := context.Background()
-	presignedURL, err := h.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(h.bucketName),
-		Key:    aws.String(objectName),
-	}, func(options *s3.PresignOptions) {
-		options.Expires = expiry
-	})
+	url, err := h.storage.PresignPut(context.Background(), objectName, expiry)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate presigned upload URL: %v", err)
 	}
-	return presignedURL.URL, nil
+	return url, nil
 }
 
 func (h *WharfHandlers) FileExists(objectName string) bool {
-	ctx := context.Background()
-	_, err := h.storageClient.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(h.bucketName),
-		Key:    aws.String(objectName),
-	})
+	_, err := h.storage.Head(context.Background(), objectName)
 	return err == nil
 }
 
 func (h *WharfHandlers) GetFileSize(objectName string) (int64, error) {
-	ctx := context.Background()
-	stat, err := h.storageClient.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(h.bucketName),
-		Key:    aws.String(objectName),
-	})
+	size, err := h.storage.Head(context.Background(), objectName)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get object stat: %v", err)
 	}
-	if stat.ContentLength == nil {
-		return 0, fmt.Errorf("object stat did not include content length")
-	}
-	return *stat.ContentLength, nil
+	return size, nil
 }
 
 func (h *WharfHandlers) GetSignedURL(objectName string, expiry time.Duration) (string, error) {
-	ctx := context.Background()
-	presignedURL, err := h.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(h.bucketName),
-		Key:    aws.String(objectName),
-	}, func(options *s3.PresignOptions) {
-		options.Expires = expiry
-	})
+	url, err := h.storage.PresignGet(context.Background(), objectName, expiry)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed URL: %v", err)
 	}
-	return presignedURL.URL, nil
+	return url, nil
 }

@@ -1,9 +1,11 @@
 package models
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -119,6 +121,8 @@ func (d *PostgresDatabase) migrate() error {
 			storage_path VARCHAR(255),
 			upload_url TEXT,
 			size BIGINT DEFAULT 0,
+			last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			evicted_at TIMESTAMP,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -147,6 +151,10 @@ func (d *PostgresDatabase) migrate() error {
 		`ALTER TABLE uploads ALTER COLUMN platforms SET DEFAULT '[]'`,
 		`UPDATE uploads SET type = 'default' WHERE type IS NULL`,
 		`UPDATE uploads SET platforms = '[]' WHERE platforms IS NULL`,
+		`ALTER TABLE build_files ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+		`ALTER TABLE build_files ADD COLUMN IF NOT EXISTS evicted_at TIMESTAMP`,
+		`CREATE INDEX IF NOT EXISTS idx_channels_current_build_id ON channels(current_build_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_build_files_archive_gc ON build_files(type, sub_type, state, last_accessed_at)`,
 	}
 	for _, stmt := range alterStatements {
 		if _, err := d.db.Exec(stmt); err != nil {
@@ -549,9 +557,26 @@ func (d *PostgresDatabase) GetLatestCompletedBuildByGameChannelVersion(gameID in
 }
 
 // BuildFile methods
+const buildFileColumns = `id, build_id, type, sub_type, state, storage_path, upload_url, size, last_accessed_at, evicted_at, created_at, updated_at`
+
+func scanBuildFile(row interface{ Scan(...interface{}) error }) (*BuildFile, error) {
+	file := &BuildFile{}
+	var evictedAt sql.NullTime
+	err := row.Scan(&file.ID, &file.BuildID, &file.Type, &file.SubType,
+		&file.State, &file.StoragePath, &file.UploadURL, &file.Size,
+		&file.LastAccessedAt, &evictedAt, &file.CreatedAt, &file.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if evictedAt.Valid {
+		file.EvictedAt = &evictedAt.Time
+	}
+	return file, nil
+}
+
 func (d *PostgresDatabase) GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, error) {
 	rows, err := d.db.Query(`
-		SELECT id, build_id, type, sub_type, state, storage_path, upload_url, size, created_at, updated_at
+		SELECT `+buildFileColumns+`
 		FROM build_files WHERE build_id = $1`, buildID)
 	if err != nil {
 		return nil, err
@@ -560,9 +585,7 @@ func (d *PostgresDatabase) GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, 
 
 	var files []*BuildFile
 	for rows.Next() {
-		file := &BuildFile{}
-		err := rows.Scan(&file.ID, &file.BuildID, &file.Type, &file.SubType,
-			&file.State, &file.StoragePath, &file.UploadURL, &file.Size, &file.CreatedAt, &file.UpdatedAt)
+		file, err := scanBuildFile(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -572,33 +595,147 @@ func (d *PostgresDatabase) GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, 
 }
 
 func (d *PostgresDatabase) GetBuildFileByID(id int64) (*BuildFile, error) {
-	file := &BuildFile{}
-	err := d.db.QueryRow(`
-		SELECT id, build_id, type, sub_type, state, storage_path, upload_url, size, created_at, updated_at
-		FROM build_files WHERE id = $1`, id).Scan(
-		&file.ID, &file.BuildID, &file.Type, &file.SubType,
-		&file.State, &file.StoragePath, &file.UploadURL, &file.Size, &file.CreatedAt, &file.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
+	return scanBuildFile(d.db.QueryRow(`
+		SELECT `+buildFileColumns+`
+		FROM build_files WHERE id = $1`, id))
 }
 
 func (d *PostgresDatabase) CreateBuildFile(file *BuildFile) error {
 	err := d.db.QueryRow(`
 		INSERT INTO build_files (build_id, type, sub_type, state, storage_path, upload_url, size)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at, updated_at`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, last_accessed_at, created_at, updated_at`,
 		file.BuildID, file.Type, file.SubType, file.State, file.StoragePath, file.UploadURL, file.Size).Scan(
-		&file.ID, &file.CreatedAt, &file.UpdatedAt)
+		&file.ID, &file.LastAccessedAt, &file.CreatedAt, &file.UpdatedAt)
 	return err
 }
 
+// UpdateBuildFile intentionally leaves last_accessed_at alone; use
+// TouchBuildFileAccess so unrelated updates can't skew eviction TTLs.
 func (d *PostgresDatabase) UpdateBuildFile(file *BuildFile) error {
+	var evictedAt interface{}
+	if file.EvictedAt != nil {
+		evictedAt = *file.EvictedAt
+	}
 	_, err := d.db.Exec(`
-		UPDATE build_files SET build_id = $1, type = $2, sub_type = $3, state = $4, storage_path = $5, upload_url = $6, size = $7, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $8`,
-		file.BuildID, file.Type, file.SubType, file.State, file.StoragePath, file.UploadURL, file.Size, file.ID)
+		UPDATE build_files SET build_id = $1, type = $2, sub_type = $3, state = $4, storage_path = $5, upload_url = $6, size = $7, evicted_at = $8, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $9`,
+		file.BuildID, file.Type, file.SubType, file.State, file.StoragePath, file.UploadURL, file.Size, evictedAt, file.ID)
 	return err
+}
+
+func (d *PostgresDatabase) TouchBuildFileAccess(id int64) error {
+	_, err := d.db.Exec(`UPDATE build_files SET last_accessed_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
+	return err
+}
+
+func (d *PostgresDatabase) ListEvictableArchiveFiles(lastAccessedBefore time.Time, limit int) ([]*BuildFile, error) {
+	rows, err := d.db.Query(`
+		SELECT bf.id, bf.build_id, bf.type, bf.sub_type, bf.state, bf.storage_path, bf.upload_url, bf.size, bf.last_accessed_at, bf.evicted_at, bf.created_at, bf.updated_at
+		FROM build_files bf
+		JOIN builds b ON b.id = bf.build_id
+		WHERE bf.type = 'archive' AND bf.sub_type = 'default'
+		  AND bf.state = 'uploaded'
+		  AND b.state = 'completed'
+		  AND COALESCE(bf.last_accessed_at, bf.updated_at) < $1
+		  AND NOT EXISTS (SELECT 1 FROM channels c WHERE c.current_build_id = b.id)
+		ORDER BY bf.last_accessed_at ASC
+		LIMIT $2`, lastAccessedBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []*BuildFile
+	for rows.Next() {
+		file, err := scanBuildFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func (d *PostgresDatabase) ListEvictedArchiveFilesWithStorage(limit int) ([]*BuildFile, error) {
+	rows, err := d.db.Query(`
+		SELECT `+buildFileColumns+`
+		FROM build_files
+		WHERE type = 'archive' AND sub_type = 'default' AND state = 'evicted'
+		  AND storage_path IS NOT NULL AND storage_path <> ''
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []*BuildFile
+	for rows.Next() {
+		file, err := scanBuildFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func (d *PostgresDatabase) IsChannelHead(buildID int64) (bool, error) {
+	var isHead bool
+	err := d.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM channels WHERE current_build_id = $1)`, buildID).Scan(&isHead)
+	return isHead, err
+}
+
+// Archive advisory locks. The lock is session-scoped, so it must be taken on a
+// pinned connection and is released automatically if that connection dies.
+const archiveLockNamespace int64 = 0x44454E4B // "DENK"
+
+func archiveLockKey(buildID int64) int64 {
+	return archiveLockNamespace<<32 | (buildID & 0xFFFFFFFF)
+}
+
+type buildArchiveLock struct {
+	conn *sql.Conn
+	key  int64
+}
+
+func (l *buildArchiveLock) Release() error {
+	_, unlockErr := l.conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, l.key)
+	closeErr := l.conn.Close()
+	if unlockErr != nil {
+		return unlockErr
+	}
+	return closeErr
+}
+
+func (d *PostgresDatabase) AcquireBuildArchiveLock(ctx context.Context, buildID int64) (BuildArchiveLock, error) {
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key := archiveLockKey(buildID)
+	if _, err = conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &buildArchiveLock{conn: conn, key: key}, nil
+}
+
+func (d *PostgresDatabase) TryAcquireBuildArchiveLock(ctx context.Context, buildID int64) (BuildArchiveLock, bool, error) {
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	key := archiveLockKey(buildID)
+	var acquired bool
+	if err = conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&acquired); err != nil {
+		conn.Close()
+		return nil, false, err
+	}
+	if !acquired {
+		conn.Close()
+		return nil, false, nil
+	}
+	return &buildArchiveLock{conn: conn, key: key}, true, nil
 }
 
 // Channel methods

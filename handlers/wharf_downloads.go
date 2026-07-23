@@ -51,6 +51,23 @@ func (h *WharfHandlers) GetBuildFileDownload(w http.ResponseWriter, r *http.Requ
 		http.Error(w, `{"errors":["build file does not belong to build"]}`, http.StatusBadRequest)
 		return
 	}
+	if buildFile.Type == "archive" && buildFile.SubType == "default" {
+		h.serveArchiveDownload(w, r, buildID)
+		return
+	}
+	h.redirectBuildFile(w, r, buildFile)
+}
+
+// serveArchiveDownload serves an archive/default download through the archive
+// cache: warm archives redirect immediately, evicted ones block while the
+// patch chain is replayed.
+func (h *WharfHandlers) serveArchiveDownload(w http.ResponseWriter, r *http.Request, buildID int64) {
+	buildFile, err := h.ensureArchive(r.Context(), buildID)
+	if err != nil {
+		fmt.Printf("Failed to ensure archive for build %d: %v\n", buildID, err)
+		http.Error(w, `{"errors":["archive unavailable"]}`, http.StatusNotFound)
+		return
+	}
 	h.redirectBuildFile(w, r, buildFile)
 }
 
@@ -70,6 +87,11 @@ func (h *WharfHandlers) GetBuildDownloadByType(w http.ResponseWriter, r *http.Re
 			return
 		}
 		http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
+		return
+	}
+
+	if fileType == "archive" && subType == "default" {
+		h.serveArchiveDownload(w, r, buildID)
 		return
 	}
 
@@ -118,9 +140,9 @@ func (h *WharfHandlers) GetLatestChannelArchive(w http.ResponseWriter, r *http.R
 		if err != nil || channel.CurrentBuildID == nil {
 			continue
 		}
-		buildFile, err := h.findBuildFile(*channel.CurrentBuildID, "archive", "default")
-		if err == nil {
-			h.redirectBuildFile(w, r, buildFile)
+		buildFile, err := h.findBuildFileAnyState(*channel.CurrentBuildID, "archive", "default")
+		if err == nil && buildFile != nil {
+			h.serveArchiveDownload(w, r, *channel.CurrentBuildID)
 			return
 		}
 	}

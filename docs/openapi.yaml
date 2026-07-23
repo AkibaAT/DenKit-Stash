@@ -162,6 +162,8 @@ components:
             - uploading
             - uploaded
             - failed
+            - evicted
+            - rebuilding
           type: string
         subType:
           examples:

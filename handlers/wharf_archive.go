@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/itchio/headway/state"
 	"github.com/itchio/lake/pools/fspool"
@@ -63,7 +61,7 @@ func (h *WharfHandlers) checkAndUpdateBuildState(buildID int64) error {
 		if err = h.db.UpdateBuild(build); err != nil {
 			return err
 		}
-		if err = h.generateArchiveDefault(build, filesByKind["patch/default"], filesByKind["signature/default"]); err != nil {
+		if err = h.generateArchiveDefault(build); err != nil {
 			return fmt.Errorf("failed to generate archive/default: %w", err)
 		}
 		return h.checkAndUpdateBuildState(buildID)
@@ -83,8 +81,11 @@ func (h *WharfHandlers) checkAndUpdateBuildState(buildID int64) error {
 	return h.advanceCompletedChannelHead(build)
 }
 
-func (h *WharfHandlers) generateArchiveDefault(build *models.Build, patchFile *models.BuildFile, signatureFile *models.BuildFile) error {
-	if h.storageClient == nil {
+// generateArchiveDefault materializes a fresh push's archive: parent tree +
+// this build's patch. Rebuilds of evicted archives go through ensureArchive,
+// which replays the same steps across a whole chain.
+func (h *WharfHandlers) generateArchiveDefault(build *models.Build) error {
+	if h.storage == nil {
 		return fmt.Errorf("object storage client is required")
 	}
 
@@ -95,51 +96,96 @@ func (h *WharfHandlers) generateArchiveDefault(build *models.Build, patchFile *m
 	}
 	defer os.RemoveAll(workDir)
 
-	patchPath := filepath.Join(workDir, "patch.pwr")
-	if err = h.downloadObject(ctx, patchFile.StoragePath, patchPath); err != nil {
-		return err
-	}
-	signaturePath := filepath.Join(workDir, "signature.pws")
-	if err = h.downloadObject(ctx, signatureFile.StoragePath, signaturePath); err != nil {
-		return err
-	}
-
-	signature, err := h.readSignature(ctx, signaturePath)
-	if err != nil {
-		return err
-	}
-
 	targetDir := filepath.Join(workDir, "target")
 	outputDir := filepath.Join(workDir, "output")
 	if err = os.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
+
+	var expectedTarget *tlc.Container
 	if build.ParentBuildID != nil {
-		if err = h.restoreParentArchive(ctx, *build.ParentBuildID, targetDir); err != nil {
+		if err = h.materializeBuildTree(ctx, *build.ParentBuildID, targetDir); err != nil {
 			return err
 		}
+		parentSignature, err := h.readParentSignature(ctx, *build.ParentBuildID, workDir)
+		if err != nil {
+			return fmt.Errorf("failed to read parent signature: %w", err)
+		}
+		if parentSignature == nil || parentSignature.Container == nil {
+			return fmt.Errorf("parent build signature is required")
+		}
+		expectedTarget = parentSignature.Container
+	}
+
+	sourceContainer, _, err := h.applyPatchStep(ctx, build, workDir, targetDir, outputDir, expectedTarget)
+	if err != nil {
+		return err
+	}
+
+	archiveStoragePath, archiveSize, metadata, err := h.compressAndUploadArchive(ctx, build, sourceContainer, outputDir, workDir)
+	if err != nil {
+		return err
+	}
+	if err = h.updateUploadFromArchiveMetadata(build, metadata, archiveSize); err != nil {
+		return err
+	}
+
+	archiveFile := &models.BuildFile{
+		BuildID:     build.ID,
+		Type:        "archive",
+		SubType:     "default",
+		State:       "uploaded",
+		Size:        archiveSize,
+		StoragePath: archiveStoragePath,
+	}
+	return h.db.CreateBuildFile(archiveFile)
+}
+
+// applyPatchStep transforms targetDir (the parent build's tree, or an empty
+// directory for root builds) into outputDir by applying build's patch, and
+// verifies the result against build's stored signature. expectedTarget is the
+// tree the patch must apply on top of; nil means the empty container. Returns
+// the resulting tree's container and its signature container, which is the
+// expectedTarget of the next chain step.
+func (h *WharfHandlers) applyPatchStep(ctx context.Context, build *models.Build, workDir string, targetDir string, outputDir string, expectedTarget *tlc.Container) (*tlc.Container, *tlc.Container, error) {
+	patchFile, err := h.findBuildFile(build.ID, "patch", "default")
+	if err != nil {
+		return nil, nil, fmt.Errorf("build %d has no patch/default: %w", build.ID, err)
+	}
+	signatureFile, err := h.findBuildFile(build.ID, "signature", "default")
+	if err != nil {
+		return nil, nil, fmt.Errorf("build %d has no signature/default: %w", build.ID, err)
+	}
+
+	patchPath := filepath.Join(workDir, fmt.Sprintf("patch-%d.pwr", build.ID))
+	if err = h.downloadObject(ctx, patchFile.StoragePath, patchPath); err != nil {
+		return nil, nil, err
+	}
+	defer os.Remove(patchPath)
+	signaturePath := filepath.Join(workDir, fmt.Sprintf("signature-%d.pws", build.ID))
+	if err = h.downloadObject(ctx, signatureFile.StoragePath, signaturePath); err != nil {
+		return nil, nil, err
+	}
+	defer os.Remove(signaturePath)
+
+	signature, err := h.readSignature(ctx, signaturePath)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	patchHandle, err := os.Open(patchPath)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	defer patchHandle.Close()
 
 	consumer := &state.Consumer{}
 	pat, err := patcher.New(seeksource.FromFile(patchHandle), consumer)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	var parentSignature *pwr.SignatureInfo
-	if build.ParentBuildID != nil {
-		parentSignature, err = h.readParentSignature(ctx, *build.ParentBuildID, workDir)
-		if err != nil {
-			return fmt.Errorf("failed to read parent signature: %w", err)
-		}
-	}
-	if err = validatePatchTargetContainer(build, pat.GetTargetContainer(), parentSignature); err != nil {
-		return err
+	if err = validatePatchTargetContainer(build, pat.GetTargetContainer(), expectedTarget); err != nil {
+		return nil, nil, err
 	}
 
 	targetPool := fspool.New(pat.GetTargetContainer(), targetDir)
@@ -150,79 +196,70 @@ func (h *WharfHandlers) generateArchiveDefault(build *models.Build, patchFile *m
 		OutputFolder:    outputDir,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if err = pat.Resume(nil, targetPool, freshBowl); err != nil {
-		return err
+		return nil, nil, err
 	}
 	if err = freshBowl.Commit(); err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	sourceContainer := pat.GetSourceContainer()
 	if err = sourceContainer.EnsureEqual(signature.Container); err != nil {
-		return fmt.Errorf("patch source tree does not match signature: %w", err)
+		return nil, nil, fmt.Errorf("patch source tree does not match signature: %w", err)
 	}
 
+	return sourceContainer, signature.Container, nil
+}
+
+// compressAndUploadArchive packs outputDir in the format recorded inside the
+// build tree and uploads it under a fresh builds/{id}/archive_default_* key.
+func (h *WharfHandlers) compressAndUploadArchive(ctx context.Context, build *models.Build, sourceContainer *tlc.Container, outputDir string, workDir string) (string, int64, *archiveOptimizationMetadata, error) {
 	metadata := readArchiveOptimizationMetadata(outputDir)
 	archiveFormat := archiveFormatFromMetadata(metadata)
-	archivePath := filepath.Join(workDir, "archive."+archiveFormat)
+	archivePath := filepath.Join(workDir, fmt.Sprintf("archive-%d.%s", build.ID, archiveFormat))
 	if archiveFormat == "zip" {
 		archiveHandle, err := os.Create(archivePath)
 		if err != nil {
-			return err
+			return "", 0, nil, err
 		}
 		outputPool := fspool.New(sourceContainer, outputDir)
-		_, compressErr := containerarchiver.CompressZip(archiveHandle, sourceContainer, outputPool, consumer)
+		_, compressErr := containerarchiver.CompressZip(archiveHandle, sourceContainer, outputPool, &state.Consumer{})
 		closeErr := archiveHandle.Close()
 		if compressErr != nil {
-			return compressErr
+			return "", 0, nil, compressErr
 		}
 		if closeErr != nil {
-			return closeErr
+			return "", 0, nil, closeErr
 		}
-	} else if err = createArchiveFromDirectory(outputDir, archivePath, archiveFormat); err != nil {
-		return err
+	} else if err := createArchiveFromDirectory(outputDir, archivePath, archiveFormat); err != nil {
+		return "", 0, nil, err
 	}
 
 	archiveInfo, err := os.Stat(archivePath)
 	if err != nil {
-		return err
+		return "", 0, nil, err
 	}
 	archiveStoragePath := fmt.Sprintf("builds/%d/archive_default_%s.%s", build.ID, uuid.New().String(), archiveFormat)
 	if err = h.uploadObject(ctx, archivePath, archiveStoragePath, archiveInfo.Size(), contentTypeForArchiveFormat(archiveFormat)); err != nil {
-		return err
+		return "", 0, nil, err
 	}
-	if err = h.updateUploadFromArchiveMetadata(build, metadata, archiveInfo.Size()); err != nil {
-		return err
-	}
-
-	archiveFile := &models.BuildFile{
-		BuildID:     build.ID,
-		Type:        "archive",
-		SubType:     "default",
-		State:       "uploaded",
-		Size:        archiveInfo.Size(),
-		StoragePath: archiveStoragePath,
-	}
-	return h.db.CreateBuildFile(archiveFile)
+	return archiveStoragePath, archiveInfo.Size(), metadata, nil
 }
 
 func (h *WharfHandlers) downloadObject(ctx context.Context, objectName string, destPath string) error {
-	object, err := h.storageClient.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(h.bucketName),
-		Key:    aws.String(objectName),
-	})
+	object, err := h.storage.Get(ctx, objectName)
 	if err != nil {
 		return err
 	}
-	defer object.Body.Close()
+	defer object.Close()
 
 	dest, err := os.Create(destPath)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(dest, object.Body)
+	_, copyErr := io.Copy(dest, object)
 	closeErr := dest.Close()
 	if copyErr != nil {
 		return copyErr
@@ -236,14 +273,7 @@ func (h *WharfHandlers) uploadObject(ctx context.Context, sourcePath string, obj
 		return err
 	}
 	defer source.Close()
-	_, err = h.storageClient.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(h.bucketName),
-		Key:           aws.String(objectName),
-		Body:          source,
-		ContentLength: aws.Int64(size),
-		ContentType:   aws.String(contentType),
-	})
-	return err
+	return h.storage.Put(ctx, objectName, source, size, contentType)
 }
 
 func (h *WharfHandlers) readSignature(ctx context.Context, signaturePath string) (*pwr.SignatureInfo, error) {
@@ -271,21 +301,18 @@ func (h *WharfHandlers) readParentSignature(ctx context.Context, parentBuildID i
 	return h.readSignature(ctx, signaturePath)
 }
 
-func validatePatchTargetContainer(build *models.Build, patchTarget *tlc.Container, parentSignature *pwr.SignatureInfo) error {
+func validatePatchTargetContainer(build *models.Build, patchTarget *tlc.Container, expectedTarget *tlc.Container) error {
 	if patchTarget == nil {
 		return fmt.Errorf("patch target tree is missing")
 	}
-	if build.ParentBuildID == nil {
+	if expectedTarget == nil {
 		if err := patchTarget.EnsureEqual(&tlc.Container{}); err != nil {
-			return fmt.Errorf("initial build patch target is not empty: %w", err)
+			return fmt.Errorf("build %d patch target is not empty: %w", build.ID, err)
 		}
 		return nil
 	}
-	if parentSignature == nil || parentSignature.Container == nil {
-		return fmt.Errorf("parent build signature is required")
-	}
-	if err := patchTarget.EnsureEqual(parentSignature.Container); err != nil {
-		return fmt.Errorf("patch target tree does not match parent signature: %w", err)
+	if err := patchTarget.EnsureEqual(expectedTarget); err != nil {
+		return fmt.Errorf("build %d patch target tree does not match parent signature: %w", build.ID, err)
 	}
 	return nil
 }
@@ -435,19 +462,13 @@ func extractArchive(archivePath string, destDir string) error {
 	}
 }
 
-func (h *WharfHandlers) restoreParentArchive(ctx context.Context, parentBuildID int64, targetDir string) error {
-	parentArchive, err := h.findBuildFile(parentBuildID, "archive", "default")
-	if err != nil {
+// materializeBuildTree extracts a build's archive into targetDir, rebuilding
+// the archive first if it was evicted from the cache.
+func (h *WharfHandlers) materializeBuildTree(ctx context.Context, buildID int64, targetDir string) error {
+	if _, err := h.ensureArchive(ctx, buildID); err != nil {
 		return err
 	}
-	archivePath := filepath.Join(targetDir, ".parent."+archiveFormatFromPath(parentArchive.StoragePath))
-	if err = h.downloadObject(ctx, parentArchive.StoragePath, archivePath); err != nil {
-		return err
-	}
-	if err = extractArchive(archivePath, targetDir); err != nil {
-		return err
-	}
-	return os.Remove(archivePath)
+	return h.materializeArchivedTree(ctx, buildID, targetDir)
 }
 
 func (h *WharfHandlers) extractZip(archivePath string, destDir string) error {

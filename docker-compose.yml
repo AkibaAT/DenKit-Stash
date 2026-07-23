@@ -28,6 +28,14 @@ services:
       - DENKIT_HTTP_IDLE_TIMEOUT=${DENKIT_HTTP_IDLE_TIMEOUT:-2m}
       - DENKIT_MAX_REQUEST_BODY_BYTES=${DENKIT_MAX_REQUEST_BODY_BYTES:-1048576}
       - DENKIT_MAX_UPLOAD_SESSION_BYTES=${DENKIT_MAX_UPLOAD_SESSION_BYTES:-53687091200}
+      # Archive cache eviction (opt-in; see .env.example). TMPDIR points at
+      # the disk-backed scratch volume so multi-GB rebuilds stay off tmpfs.
+      - TMPDIR=/scratch
+      - DENKIT_ARCHIVE_GC_ENABLED=${DENKIT_ARCHIVE_GC_ENABLED:-false}
+      - DENKIT_ARCHIVE_TTL=${DENKIT_ARCHIVE_TTL:-720h}
+      - DENKIT_ARCHIVE_GC_INTERVAL=${DENKIT_ARCHIVE_GC_INTERVAL:-1h}
+      - DENKIT_ARCHIVE_GC_BATCH=${DENKIT_ARCHIVE_GC_BATCH:-100}
+      - DENKIT_ARCHIVE_REBUILD_TIMEOUT=${DENKIT_ARCHIVE_REBUILD_TIMEOUT:-20m}
     cap_drop:
       - ALL
     security_opt:
@@ -35,6 +43,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - scratch_data:/scratch
     depends_on:
       db:
         condition: service_healthy
@@ -114,6 +124,8 @@ volumes:
     name: ${DB_VOLUME_NAME}
   rustfs_data:
     name: ${RUSTFS_VOLUME_NAME}
+  scratch_data:
+    name: ${SCRATCH_VOLUME_NAME:-denkit_scratch_data}
 
 networks:
   traefik:
