@@ -246,7 +246,7 @@ func (h *WharfHandlers) redirectBuildFile(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"errors":["file not found in storage"]}`, http.StatusNotFound)
 		return
 	}
-	signedURL, err := h.GetSignedURL(buildFile.StoragePath, time.Hour)
+	signedURL, err := h.GetSignedURL(buildFile.StoragePath, time.Hour, h.downloadFilename(buildFile))
 	if err != nil {
 		http.Error(w, `{"errors":["could not generate download URL"]}`, http.StatusInternalServerError)
 		return
@@ -257,4 +257,80 @@ func (h *WharfHandlers) redirectBuildFile(w http.ResponseWriter, r *http.Request
 		return
 	}
 	http.Redirect(w, r, signedURL, http.StatusTemporaryRedirect)
+}
+
+// downloadFilename names an archive/default download after the game and the
+// build's user version, e.g. "dilmurs-tale-1.4.2.zip". Storage keys are opaque
+// UUIDs, so without this a browser saves the file as archive_default_<uuid>.zip.
+//
+// Composing the name per build rather than reading upload.Filename matters:
+// an upload row tracks the channel head and is rewritten on every push, so its
+// filename describes the newest version even when an older one is downloaded.
+//
+// Patch and signature files are consumed by butler rather than humans and keep
+// their raw key; an empty return leaves the presigned URL undecorated.
+func (h *WharfHandlers) downloadFilename(buildFile *models.BuildFile) string {
+	if buildFile.Type != "archive" || buildFile.SubType != "default" {
+		return ""
+	}
+	build, err := h.db.GetBuildByID(buildFile.BuildID)
+	if err != nil {
+		return ""
+	}
+
+	name := sanitizeFilenamePart(h.gameTitleForBuild(build))
+	if name == "" {
+		name = "archive"
+	}
+	version := sanitizeFilenamePart(build.UserVersion)
+	if version == "" {
+		version = fmt.Sprintf("build-%d", build.ID)
+	}
+	name += "-" + version
+
+	if format := archiveFormatFromPath(buildFile.StoragePath); format != "" {
+		name += "." + format
+	}
+	return name
+}
+
+func (h *WharfHandlers) gameTitleForBuild(build *models.Build) string {
+	upload, err := h.db.GetUploadByID(build.UploadID)
+	if err != nil {
+		return ""
+	}
+	_, game, err := h.db.GetGameByID(upload.GameID)
+	if err != nil {
+		return ""
+	}
+	return game.Title
+}
+
+// sanitizeFilenamePart reduces an untrusted string — a game title, or the
+// --userversion butler was handed — to characters that survive a quoted
+// Content-Disposition and every filesystem the download may land on. Runs of
+// rejected characters collapse into a single dash; leading and trailing
+// punctuation is dropped so the result can never read as a dotfile or a path.
+func sanitizeFilenamePart(value string) string {
+	const maxLength = 80
+
+	var builder strings.Builder
+	pendingDash := false
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z',
+			char >= '0' && char <= '9', char == '.', char == '_':
+			if pendingDash && builder.Len() > 0 {
+				builder.WriteByte('-')
+			}
+			pendingDash = false
+			builder.WriteRune(char)
+		default:
+			pendingDash = true
+		}
+		if builder.Len() >= maxLength {
+			break
+		}
+	}
+	return strings.Trim(builder.String(), "-._")
 }

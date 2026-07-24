@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -16,7 +17,10 @@ type ObjectStorage interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	Put(ctx context.Context, key string, body io.Reader, size int64, contentType string) error
 	Delete(ctx context.Context, key string) error
-	PresignGet(ctx context.Context, key string, expiry time.Duration) (string, error)
+	// PresignGet signs a GET for key. A non-empty downloadFilename is pinned
+	// into the signature as a Content-Disposition, so the browser saves the
+	// object under that name instead of its opaque storage key.
+	PresignGet(ctx context.Context, key string, expiry time.Duration, downloadFilename string) (string, error)
 	PresignPut(ctx context.Context, key string, expiry time.Duration) (string, error)
 }
 
@@ -74,11 +78,15 @@ func (s *s3ObjectStorage) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-func (s *s3ObjectStorage) PresignGet(ctx context.Context, key string, expiry time.Duration) (string, error) {
-	presignedURL, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+func (s *s3ObjectStorage) PresignGet(ctx context.Context, key string, expiry time.Duration, downloadFilename string) (string, error) {
+	input := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
-	}, func(options *s3.PresignOptions) {
+	}
+	if downloadFilename != "" {
+		input.ResponseContentDisposition = aws.String(fmt.Sprintf("attachment; filename=%q", downloadFilename))
+	}
+	presignedURL, err := s.presignClient.PresignGetObject(ctx, input, func(options *s3.PresignOptions) {
 		options.Expires = expiry
 	})
 	if err != nil {

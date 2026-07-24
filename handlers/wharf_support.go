@@ -174,8 +174,10 @@ func (h *WharfHandlers) GetFileSize(objectName string) (int64, error) {
 	return size, nil
 }
 
-func (h *WharfHandlers) GetSignedURL(objectName string, expiry time.Duration) (string, error) {
-	url, err := h.storage.PresignGet(context.Background(), objectName, expiry)
+// GetSignedURL presigns a download for objectName. Pass a non-empty
+// downloadFilename to control the name the browser saves the file under.
+func (h *WharfHandlers) GetSignedURL(objectName string, expiry time.Duration, downloadFilename string) (string, error) {
+	url, err := h.storage.PresignGet(context.Background(), objectName, expiry, downloadFilename)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed URL: %v", err)
 	}

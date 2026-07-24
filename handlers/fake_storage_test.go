@@ -16,10 +16,13 @@ type memStorage struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	puts    []string
+	// downloadNames records the filename each key was last presigned with,
+	// standing in for the Content-Disposition a real presign would carry.
+	downloadNames map[string]string
 }
 
 func newMemStorage() *memStorage {
-	return &memStorage{objects: map[string][]byte{}}
+	return &memStorage{objects: map[string][]byte{}, downloadNames: map[string]string{}}
 }
 
 func (m *memStorage) Head(_ context.Context, key string) (int64, error) {
@@ -64,8 +67,17 @@ func (m *memStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (m *memStorage) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
+func (m *memStorage) PresignGet(_ context.Context, key string, _ time.Duration, downloadFilename string) (string, error) {
+	m.mu.Lock()
+	m.downloadNames[key] = downloadFilename
+	m.mu.Unlock()
 	return "https://fake.storage/" + key, nil
+}
+
+func (m *memStorage) downloadName(key string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.downloadNames[key]
 }
 
 func (m *memStorage) PresignPut(_ context.Context, key string, _ time.Duration) (string, error) {
