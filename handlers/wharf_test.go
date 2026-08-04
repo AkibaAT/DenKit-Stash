@@ -97,8 +97,8 @@ func TestPlatformsForChannelNameMatchesButlerPlatformTags(t *testing.T) {
 
 	for channel, expected := range tests {
 		t.Run(channel, func(t *testing.T) {
-			if got := platformsForChannelName(channel); got != expected {
-				t.Fatalf("platformsForChannelName(%q) = %s, want %s", channel, got, expected)
+			if got := platformsForTokens(channelNameTokens(channel)); got != expected {
+				t.Fatalf("platforms for channel %q = %s, want %s", channel, got, expected)
 			}
 		})
 	}
@@ -115,8 +115,8 @@ func TestPlatformsForArchiveFilenameMatchesButlerPlatformTags(t *testing.T) {
 
 	for filename, expected := range tests {
 		t.Run(filename, func(t *testing.T) {
-			if got := platformsForArchiveFilename(filename); got != expected {
-				t.Fatalf("platformsForArchiveFilename(%q) = %s, want %s", filename, got, expected)
+			if got := platformsForTokens(channelNameTokens(filename)); got != expected {
+				t.Fatalf("platforms for filename %q = %s, want %s", filename, got, expected)
 			}
 		})
 	}

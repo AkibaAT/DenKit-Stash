@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"denkit-stash/models"
 	"encoding/hex"
-	"fmt"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -95,6 +95,7 @@ func CreateTestUser(db models.Database, username string) (*models.User, error) {
 		Username:    username,
 		DisplayName: username,
 		APIKey:      apiKey,
+		IsActive:    true,
 	}
 
 	err = db.CreateUser(user)
@@ -102,6 +103,6 @@ func CreateTestUser(db models.Database, username string) (*models.User, error) {
 		return nil, err
 	}
 
-	fmt.Printf("Created test user: %s\n", username)
+	log.Printf("created test user %s", username)
 	return user, nil
 }

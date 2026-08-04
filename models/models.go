@@ -5,12 +5,10 @@ import (
 	"time"
 )
 
-// BuildArchiveLock is a held advisory lock on a build's archive lifecycle.
 type BuildArchiveLock interface {
 	Release() error
 }
 
-// User represents a user account
 type User struct {
 	ID          int64     `json:"id" db:"id"`
 	Username    string    `json:"username" db:"username"`
@@ -22,22 +20,17 @@ type User struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// IsAdmin returns true if the user has admin role
 func (u *User) IsAdmin() bool {
 	return u.Role == "admin"
 }
 
-// CanAccessNamespace returns true if the user can access the given namespace
 func (u *User) CanAccessNamespace(namespace string) bool {
-	// Admin users can access any namespace
 	if u.IsAdmin() {
 		return true
 	}
-	// Regular users can only access their own namespace
 	return u.Username == namespace
 }
 
-// Game represents a game
 type Game struct {
 	ID             int64     `json:"id" db:"id"`
 	UserID         int64     `json:"user_id" db:"user_id"`
@@ -50,7 +43,6 @@ type Game struct {
 	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// Upload represents a file upload for a game
 type Upload struct {
 	ID          int64     `json:"id" db:"id"`
 	GameID      int64     `json:"game_id" db:"game_id"`
@@ -64,7 +56,6 @@ type Upload struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// Build represents a wharf build
 type Build struct {
 	ID            int64     `json:"id" db:"id"`
 	UploadID      int64     `json:"upload_id" db:"upload_id"`
@@ -76,7 +67,6 @@ type Build struct {
 	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// BuildFile represents a file within a build
 type BuildFile struct {
 	ID          int64  `json:"id" db:"id"`
 	BuildID     int64  `json:"build_id" db:"build_id"`
@@ -94,7 +84,6 @@ type BuildFile struct {
 	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
 
-// Channel represents a wharf channel
 type Channel struct {
 	ID             int64     `json:"id" db:"id"`
 	Name           string    `json:"name" db:"name"`
@@ -104,7 +93,6 @@ type Channel struct {
 	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// UploadSession tracks a server-owned resumable build-file upload.
 type UploadSession struct {
 	ID          string    `json:"id" db:"id"`
 	BuildFileID int64     `json:"build_file_id" db:"build_file_id"`
@@ -115,29 +103,23 @@ type UploadSession struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// Database interface for testing
 type Database interface {
-	// Users
 	GetUserByAPIKey(apiKey string) (*User, error)
-	GetUserByID(id int64) (*User, error)
 	GetUserByUsername(username string) (*User, error)
 	CreateUser(user *User) error
 	UpdateUser(user *User) error
 	ListUsers() ([]*User, error)
 
-	// Games
 	GetGameByID(id int64) (*User, *Game, error)
 	GetGamesByUserID(userID int64) ([]*Game, error)
 	GetGameByUserAndTitle(userID int64, title string) (*Game, error)
 	CreateGame(game *Game) error
 
-	// Uploads
 	GetUploadByID(id int64) (*Upload, error)
 	GetUploadsByGameID(gameID int64) ([]*Upload, error)
 	CreateUpload(upload *Upload) error
 	UpdateUpload(upload *Upload) error
 
-	// Builds
 	GetBuildByID(id int64) (*Build, error)
 	GetBuildsByUploadID(uploadID int64) ([]*Build, error)
 	GetBuildsByGameAndChannel(gameID int64, channel string) ([]*Build, error)
@@ -145,7 +127,6 @@ type Database interface {
 	CreateBuild(build *Build) error
 	UpdateBuild(build *Build) error
 
-	// Build Files
 	GetBuildFileByID(id int64) (*BuildFile, error)
 	GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, error)
 	CreateBuildFile(buildFile *BuildFile) error
@@ -160,13 +141,11 @@ type Database interface {
 	AcquireBuildArchiveLock(ctx context.Context, buildID int64) (BuildArchiveLock, error)
 	TryAcquireBuildArchiveLock(ctx context.Context, buildID int64) (BuildArchiveLock, bool, error)
 
-	// Channels
 	GetChannelByName(name string, uploadID int64) (*Channel, error)
 	GetChannelsByUploadID(uploadID int64) ([]*Channel, error)
 	CreateChannel(channel *Channel) error
 	UpdateChannel(channel *Channel) error
 
-	// Upload Sessions
 	GetUploadSessionByID(id string) (*UploadSession, error)
 	CreateUploadSession(session *UploadSession) error
 	UpdateUploadSession(session *UploadSession) error

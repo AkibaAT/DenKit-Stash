@@ -17,12 +17,6 @@ deps:
 create-user: build
 	./denkit-stash -create-user=testuser
 
-test-api:
-	@echo "Testing server health..."
-	curl -s http://localhost:8080/ | jq .
-	@echo "\nTesting with test user API key..."
-	@echo "First create a user with: make create-user"
-
 test:
 	go test ./...
 
@@ -49,20 +43,12 @@ clean:
 	rm -f denkit-stash denkit-stash.exe
 	rm -rf storage/
 
-setup: deps build create-user
-	@echo "Setup complete! Run 'make run' to start the server"
-
-test-butler:
-	@echo "Testing butler integration..."
-	@echo "Make sure server is running first!"
-	butler --address=http://localhost:8080 login
-
 help:
 	@echo "Available targets:"
 	@echo "  build      - Build the server binary"
 	@echo "  run        - Build and run the server"
 	@echo "  deps       - Install Go dependencies"
-	@echo "  create-user- Create a test user"
+	@echo "  create-user - Create a test user"
 	@echo "  test       - Run Go tests"
 	@echo "  contract-test - Run black-box butler compatibility checks"
 	@echo "  openapi-generate - Generate OpenAPI docs from Huma routes"
@@ -70,7 +56,5 @@ help:
 	@echo "  actionlint - Validate GitHub Actions workflow syntax"
 	@echo "  govulncheck - Scan reachable Go code for known vulnerabilities"
 	@echo "  verify     - Run local supply-chain and test gates"
-	@echo "  test-api   - Test the API endpoints"
 	@echo "  clean      - Clean build artifacts"
-	@echo "  setup      - Quick setup for development"
 	@echo "  help       - Show this help"

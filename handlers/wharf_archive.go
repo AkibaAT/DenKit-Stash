@@ -52,9 +52,9 @@ func (h *WharfHandlers) checkAndUpdateBuildState(buildID int64) error {
 		}
 	}
 
-	hasPatch := h.hasReadyRequiredFile(filesByKind, "patch/default")
-	hasSignature := h.hasReadyRequiredFile(filesByKind, "signature/default")
-	hasArchive := h.hasReadyRequiredFile(filesByKind, "archive/default")
+	hasPatch := hasReadyRequiredFile(filesByKind, "patch/default")
+	hasSignature := hasReadyRequiredFile(filesByKind, "signature/default")
+	hasArchive := hasReadyRequiredFile(filesByKind, "archive/default")
 
 	if hasPatch && hasSignature && !hasArchive && build.State == "started" {
 		build.State = "processing"
@@ -471,10 +471,6 @@ func (h *WharfHandlers) materializeBuildTree(ctx context.Context, buildID int64,
 	return h.materializeArchivedTree(ctx, buildID, targetDir)
 }
 
-func (h *WharfHandlers) extractZip(archivePath string, destDir string) error {
-	return extractZipArchive(archivePath, destDir)
-}
-
 func extractZipArchive(archivePath string, destDir string) error {
 	reader, err := archivezip.OpenReader(archivePath)
 	if err != nil {
@@ -545,7 +541,7 @@ func topLevelArchiveEntries(sourceDir string) ([]string, error) {
 	return names, nil
 }
 
-func (h *WharfHandlers) hasReadyRequiredFile(files map[string]*models.BuildFile, key string) bool {
+func hasReadyRequiredFile(files map[string]*models.BuildFile, key string) bool {
 	file := files[key]
 	return file != nil && file.Size > 0
 }
@@ -577,7 +573,7 @@ func (h *WharfHandlers) updateUploadFromArchiveMetadata(build *models.Build, met
 	upload.Filename = optimizedArchiveFilename(metadata.OriginalArchive.Filename, archiveFormatFromMetadata(metadata))
 	upload.DisplayName = strings.TrimSuffix(upload.Filename, "."+archiveFormatFromPath(upload.Filename))
 	upload.Size = archiveSize
-	if platforms := platformsForArchiveFilename(metadata.OriginalArchive.Filename); platforms != "[]" {
+	if platforms := platformsForTokens(channelNameTokens(metadata.OriginalArchive.Filename)); platforms != "[]" {
 		upload.Platforms = platforms
 	}
 

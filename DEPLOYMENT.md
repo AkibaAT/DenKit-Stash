@@ -18,7 +18,7 @@ $EDITOR .env
 ./deploy.sh
 ```
 
-The service runs schema setup at startup through the Go database layer. Do not mount the removed legacy SQL migration directory into PostgreSQL.
+The service runs schema setup at startup through the Go database layer.
 
 DenKit uses the official AWS SDK for Go v2 against the configured S3-compatible endpoint. It checks `S3_BUCKET` at startup and creates it when the configured S3 credentials are allowed to create buckets. It then removes any bucket policy so the bucket stays private; clients receive signed URLs for uploads and downloads instead of public object access. If you use restricted S3 credentials, create the bucket before starting the service and grant those credentials read/write/multipart plus bucket-policy permissions for that bucket.
 
@@ -60,7 +60,7 @@ The compose file exposes:
 
 ## Security
 
-- Containers run as non-root where applicable.
+- The `denkit-stash` image runs as its dedicated non-root user; PostgreSQL and RustFS run with their image defaults.
 - RustFS storage should stay private; downloads and uploads use signed URLs.
 - The RustFS console is local-only by default. Access it through SSH tunneling.
 - Store real secrets outside version control. `.env` files are ignored.

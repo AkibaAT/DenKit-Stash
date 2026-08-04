@@ -1,6 +1,7 @@
 package models
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -10,19 +11,17 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// PostgresDatabase implements the Database interface using PostgreSQL
 type PostgresDatabase struct {
 	db *sql.DB
 }
 
-// NewPostgresDatabase creates a new PostgreSQL database connection
 func NewPostgresDatabase() (*PostgresDatabase, error) {
-	host := getEnvOrDefault("POSTGRES_HOST", "localhost")
-	port := getEnvOrDefault("POSTGRES_PORT", "5432")
-	user := getEnvOrDefault("POSTGRES_USER", "postgres")
-	password := getEnvOrDefault("POSTGRES_PASSWORD", "postgres")
-	dbname := getEnvOrDefault("POSTGRES_DB", "butler")
-	sslmode := getEnvOrDefault("POSTGRES_SSLMODE", "disable")
+	host := cmp.Or(os.Getenv("POSTGRES_HOST"), "localhost")
+	port := cmp.Or(os.Getenv("POSTGRES_PORT"), "5432")
+	user := cmp.Or(os.Getenv("POSTGRES_USER"), "postgres")
+	password := cmp.Or(os.Getenv("POSTGRES_PASSWORD"), "postgres")
+	dbname := cmp.Or(os.Getenv("POSTGRES_DB"), "butler")
+	sslmode := cmp.Or(os.Getenv("POSTGRES_SSLMODE"), "disable")
 
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		host, port, user, password, dbname, sslmode)
@@ -42,7 +41,6 @@ func NewPostgresDatabase() (*PostgresDatabase, error) {
 
 	pgDB := &PostgresDatabase{db: db}
 
-	// Run migrations
 	if err := pgDB.migrate(); err != nil {
 		return nil, fmt.Errorf("failed to run migrations: %v", err)
 	}
@@ -50,14 +48,6 @@ func NewPostgresDatabase() (*PostgresDatabase, error) {
 	return pgDB, nil
 }
 
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-// migrate runs the database migrations
 func (d *PostgresDatabase) migrate() error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS users (
@@ -135,6 +125,8 @@ func (d *PostgresDatabase) migrate() error {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_channels_current_build_id ON channels(current_build_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_build_files_archive_gc ON build_files(type, sub_type, state, last_accessed_at)`,
 	}
 
 	for _, migration := range migrations {
@@ -143,119 +135,43 @@ func (d *PostgresDatabase) migrate() error {
 		}
 	}
 
-	alterStatements := []string{
-		`ALTER TABLE builds ADD COLUMN IF NOT EXISTS channel_name VARCHAR(255) DEFAULT ''`,
-		`ALTER TABLE build_files ADD COLUMN IF NOT EXISTS upload_url TEXT`,
-		`ALTER TABLE channels ADD COLUMN IF NOT EXISTS current_build_id INTEGER`,
-		`ALTER TABLE uploads ALTER COLUMN type SET DEFAULT 'default'`,
-		`ALTER TABLE uploads ALTER COLUMN platforms SET DEFAULT '[]'`,
-		`UPDATE uploads SET type = 'default' WHERE type IS NULL`,
-		`UPDATE uploads SET platforms = '[]' WHERE platforms IS NULL`,
-		`ALTER TABLE build_files ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
-		`ALTER TABLE build_files ADD COLUMN IF NOT EXISTS evicted_at TIMESTAMP`,
-		`CREATE INDEX IF NOT EXISTS idx_channels_current_build_id ON channels(current_build_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_build_files_archive_gc ON build_files(type, sub_type, state, last_accessed_at)`,
-	}
-	for _, stmt := range alterStatements {
-		if _, err := d.db.Exec(stmt); err != nil {
-			return fmt.Errorf("failed to update schema: %v", err)
-		}
-	}
-
-	return d.convertLegacyAPIKeys()
-}
-
-func (d *PostgresDatabase) convertLegacyAPIKeys() error {
-	rows, err := d.db.Query(`SELECT id, api_key FROM users WHERE api_key NOT LIKE $1`, apiKeyDigestPrefix+"%")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	type legacyKey struct {
-		id     int64
-		apiKey string
-	}
-	var keys []legacyKey
-	for rows.Next() {
-		key := legacyKey{}
-		if err = rows.Scan(&key.id, &key.apiKey); err != nil {
-			return err
-		}
-		keys = append(keys, key)
-	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-
-	for _, key := range keys {
-		digest, err := APIKeyDigest(key.apiKey)
-		if err != nil {
-			return fmt.Errorf("failed to digest legacy API key for user %d: %w", key.id, err)
-		}
-		if _, err = d.db.Exec(`UPDATE users SET api_key = $1 WHERE id = $2`, digest, key.id); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-// Close closes the database connection
 func (d *PostgresDatabase) Close() error {
 	return d.db.Close()
 }
 
-// User methods
+const userColumns = `id, username, display_name, api_key, role, is_active, created_at, updated_at`
+
+func scanUser(row interface{ Scan(...interface{}) error }) (*User, error) {
+	user := &User{}
+	if err := row.Scan(&user.ID, &user.Username, &user.DisplayName, &user.APIKey,
+		&user.Role, &user.IsActive, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 func (d *PostgresDatabase) GetUserByAPIKey(apiKey string) (*User, error) {
 	apiKeyDigest, err := APIKeyDigest(apiKey)
 	if err != nil {
 		return nil, err
 	}
-	user := &User{}
-	err = d.db.QueryRow(`
-		SELECT id, username, display_name, api_key, role, is_active, created_at, updated_at 
-		FROM users WHERE api_key = $1 AND is_active = true`, apiKeyDigest).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.APIKey,
-		&user.Role, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return user, nil
-}
-
-func (d *PostgresDatabase) GetUserByID(id int64) (*User, error) {
-	user := &User{}
-	err := d.db.QueryRow(`
-		SELECT id, username, display_name, api_key, role, is_active, created_at, updated_at 
-		FROM users WHERE id = $1`, id).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.APIKey,
-		&user.Role, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return user, nil
+	return scanUser(d.db.QueryRow(`
+		SELECT `+userColumns+`
+		FROM users WHERE api_key = $1 AND is_active = true`, apiKeyDigest))
 }
 
 func (d *PostgresDatabase) GetUserByUsername(username string) (*User, error) {
-	user := &User{}
-	err := d.db.QueryRow(`
-		SELECT id, username, display_name, api_key, role, is_active, created_at, updated_at 
-		FROM users WHERE username = $1`, username).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.APIKey,
-		&user.Role, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return user, nil
+	return scanUser(d.db.QueryRow(`
+		SELECT `+userColumns+`
+		FROM users WHERE username = $1`, username))
 }
 
 func (d *PostgresDatabase) CreateUser(user *User) error {
-	// Set default values if not provided
 	if user.Role == "" {
 		user.Role = "user"
-	}
-	if !user.IsActive {
-		user.IsActive = true
 	}
 
 	apiKeyDigest, err := APIKeyDigest(user.APIKey)
@@ -285,7 +201,7 @@ func (d *PostgresDatabase) UpdateUser(user *User) error {
 
 func (d *PostgresDatabase) ListUsers() ([]*User, error) {
 	rows, err := d.db.Query(`
-		SELECT id, username, display_name, api_key, role, is_active, created_at, updated_at
+		SELECT ` + userColumns + `
 		FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
@@ -294,9 +210,7 @@ func (d *PostgresDatabase) ListUsers() ([]*User, error) {
 
 	var users []*User
 	for rows.Next() {
-		user := &User{}
-		err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.APIKey,
-			&user.Role, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
+		user, err := scanUser(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -305,7 +219,6 @@ func (d *PostgresDatabase) ListUsers() ([]*User, error) {
 	return users, nil
 }
 
-// Game methods
 func (d *PostgresDatabase) GetGameByID(id int64) (*User, *Game, error) {
 	game := &Game{}
 	user := &User{}
@@ -348,7 +261,6 @@ func (d *PostgresDatabase) CreateGame(game *Game) error {
 	return err
 }
 
-// Upload methods
 func (d *PostgresDatabase) GetUploadsByGameID(gameID int64) ([]*Upload, error) {
 	rows, err := d.db.Query(`
 		SELECT id, game_id, filename, display_name, storage, size, type, platforms, created_at, updated_at
@@ -433,22 +345,28 @@ func (d *PostgresDatabase) GetGamesByUserID(userID int64) ([]*Game, error) {
 	return games, nil
 }
 
-// Build methods
-func (d *PostgresDatabase) GetBuildByID(id int64) (*Build, error) {
+const (
+	buildColumns          = `id, upload_id, channel_name, parent_build_id, user_version, state, created_at, updated_at`
+	qualifiedBuildColumns = `b.id, b.upload_id, b.channel_name, b.parent_build_id, b.user_version, b.state, b.created_at, b.updated_at`
+)
+
+func scanBuild(row interface{ Scan(...interface{}) error }) (*Build, error) {
 	build := &Build{}
 	var parentBuildID sql.NullInt64
-	err := d.db.QueryRow(`
-		SELECT id, upload_id, channel_name, parent_build_id, user_version, state, created_at, updated_at
-		FROM builds WHERE id = $1`, id).Scan(
-		&build.ID, &build.UploadID, &build.ChannelName, &parentBuildID, &build.UserVersion,
-		&build.State, &build.CreatedAt, &build.UpdatedAt)
-	if err != nil {
+	if err := row.Scan(&build.ID, &build.UploadID, &build.ChannelName, &parentBuildID,
+		&build.UserVersion, &build.State, &build.CreatedAt, &build.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if parentBuildID.Valid {
 		build.ParentBuildID = &parentBuildID.Int64
 	}
 	return build, nil
+}
+
+func (d *PostgresDatabase) GetBuildByID(id int64) (*Build, error) {
+	return scanBuild(d.db.QueryRow(`
+		SELECT `+buildColumns+`
+		FROM builds WHERE id = $1`, id))
 }
 
 func (d *PostgresDatabase) CreateBuild(build *Build) error {
@@ -478,7 +396,7 @@ func (d *PostgresDatabase) UpdateBuild(build *Build) error {
 
 func (d *PostgresDatabase) GetBuildsByUploadID(uploadID int64) ([]*Build, error) {
 	rows, err := d.db.Query(`
-		SELECT id, upload_id, channel_name, parent_build_id, user_version, state, created_at, updated_at
+		SELECT `+buildColumns+`
 		FROM builds WHERE upload_id = $1 ORDER BY id DESC`, uploadID)
 	if err != nil {
 		return nil, err
@@ -487,15 +405,9 @@ func (d *PostgresDatabase) GetBuildsByUploadID(uploadID int64) ([]*Build, error)
 
 	var builds []*Build
 	for rows.Next() {
-		build := &Build{}
-		var parentBuildID sql.NullInt64
-		err := rows.Scan(&build.ID, &build.UploadID, &build.ChannelName, &parentBuildID, &build.UserVersion,
-			&build.State, &build.CreatedAt, &build.UpdatedAt)
+		build, err := scanBuild(rows)
 		if err != nil {
 			return nil, err
-		}
-		if parentBuildID.Valid {
-			build.ParentBuildID = &parentBuildID.Int64
 		}
 		builds = append(builds, build)
 	}
@@ -504,7 +416,7 @@ func (d *PostgresDatabase) GetBuildsByUploadID(uploadID int64) ([]*Build, error)
 
 func (d *PostgresDatabase) GetBuildsByGameAndChannel(gameID int64, channel string) ([]*Build, error) {
 	rows, err := d.db.Query(`
-		SELECT b.id, b.upload_id, b.channel_name, b.parent_build_id, b.user_version, b.state, b.created_at, b.updated_at
+		SELECT `+qualifiedBuildColumns+`
 		FROM builds b
 		JOIN uploads u ON u.id = b.upload_id
 		WHERE u.game_id = $1
@@ -517,15 +429,9 @@ func (d *PostgresDatabase) GetBuildsByGameAndChannel(gameID int64, channel strin
 
 	var builds []*Build
 	for rows.Next() {
-		build := &Build{}
-		var parentBuildID sql.NullInt64
-		err := rows.Scan(&build.ID, &build.UploadID, &build.ChannelName, &parentBuildID, &build.UserVersion,
-			&build.State, &build.CreatedAt, &build.UpdatedAt)
+		build, err := scanBuild(rows)
 		if err != nil {
 			return nil, err
-		}
-		if parentBuildID.Valid {
-			build.ParentBuildID = &parentBuildID.Int64
 		}
 		builds = append(builds, build)
 	}
@@ -533,10 +439,8 @@ func (d *PostgresDatabase) GetBuildsByGameAndChannel(gameID int64, channel strin
 }
 
 func (d *PostgresDatabase) GetLatestCompletedBuildByGameChannelVersion(gameID int64, channel string, userVersion string) (*Build, error) {
-	build := &Build{}
-	var parentBuildID sql.NullInt64
-	err := d.db.QueryRow(`
-		SELECT b.id, b.upload_id, b.channel_name, b.parent_build_id, b.user_version, b.state, b.created_at, b.updated_at
+	return scanBuild(d.db.QueryRow(`
+		SELECT `+qualifiedBuildColumns+`
 		FROM builds b
 		JOIN uploads u ON u.id = b.upload_id
 		WHERE u.game_id = $1
@@ -544,20 +448,13 @@ func (d *PostgresDatabase) GetLatestCompletedBuildByGameChannelVersion(gameID in
 			AND b.user_version = $3
 			AND b.state = 'completed'
 		ORDER BY b.id DESC
-		LIMIT 1`, gameID, channel, userVersion).Scan(
-		&build.ID, &build.UploadID, &build.ChannelName, &parentBuildID, &build.UserVersion,
-		&build.State, &build.CreatedAt, &build.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if parentBuildID.Valid {
-		build.ParentBuildID = &parentBuildID.Int64
-	}
-	return build, nil
+		LIMIT 1`, gameID, channel, userVersion))
 }
 
-// BuildFile methods
-const buildFileColumns = `id, build_id, type, sub_type, state, storage_path, upload_url, size, last_accessed_at, evicted_at, created_at, updated_at`
+const (
+	buildFileColumns          = `id, build_id, type, sub_type, state, storage_path, upload_url, size, last_accessed_at, evicted_at, created_at, updated_at`
+	qualifiedBuildFileColumns = `bf.id, bf.build_id, bf.type, bf.sub_type, bf.state, bf.storage_path, bf.upload_url, bf.size, bf.last_accessed_at, bf.evicted_at, bf.created_at, bf.updated_at`
+)
 
 func scanBuildFile(row interface{ Scan(...interface{}) error }) (*BuildFile, error) {
 	file := &BuildFile{}
@@ -630,7 +527,7 @@ func (d *PostgresDatabase) TouchBuildFileAccess(id int64) error {
 
 func (d *PostgresDatabase) ListEvictableArchiveFiles(lastAccessedBefore time.Time, limit int) ([]*BuildFile, error) {
 	rows, err := d.db.Query(`
-		SELECT bf.id, bf.build_id, bf.type, bf.sub_type, bf.state, bf.storage_path, bf.upload_url, bf.size, bf.last_accessed_at, bf.evicted_at, bf.created_at, bf.updated_at
+		SELECT `+qualifiedBuildFileColumns+`
 		FROM build_files bf
 		JOIN builds b ON b.id = bf.build_id
 		WHERE bf.type = 'archive' AND bf.sub_type = 'default'
@@ -738,10 +635,24 @@ func (d *PostgresDatabase) TryAcquireBuildArchiveLock(ctx context.Context, build
 	return &buildArchiveLock{conn: conn, key: key}, true, nil
 }
 
-// Channel methods
+const channelColumns = `id, upload_id, name, current_build_id, created_at, updated_at`
+
+func scanChannel(row interface{ Scan(...interface{}) error }) (*Channel, error) {
+	channel := &Channel{}
+	var buildID sql.NullInt64
+	if err := row.Scan(&channel.ID, &channel.UploadID, &channel.Name, &buildID,
+		&channel.CreatedAt, &channel.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if buildID.Valid {
+		channel.CurrentBuildID = &buildID.Int64
+	}
+	return channel, nil
+}
+
 func (d *PostgresDatabase) GetChannelsByUploadID(uploadID int64) ([]*Channel, error) {
 	rows, err := d.db.Query(`
-		SELECT id, upload_id, name, current_build_id, created_at, updated_at
+		SELECT `+channelColumns+`
 		FROM channels WHERE upload_id = $1`, uploadID)
 	if err != nil {
 		return nil, err
@@ -750,15 +661,9 @@ func (d *PostgresDatabase) GetChannelsByUploadID(uploadID int64) ([]*Channel, er
 
 	var channels []*Channel
 	for rows.Next() {
-		channel := &Channel{}
-		var buildID sql.NullInt64
-		err := rows.Scan(&channel.ID, &channel.UploadID, &channel.Name, &buildID,
-			&channel.CreatedAt, &channel.UpdatedAt)
+		channel, err := scanChannel(rows)
 		if err != nil {
 			return nil, err
-		}
-		if buildID.Valid {
-			channel.CurrentBuildID = &buildID.Int64
 		}
 		channels = append(channels, channel)
 	}
@@ -766,20 +671,9 @@ func (d *PostgresDatabase) GetChannelsByUploadID(uploadID int64) ([]*Channel, er
 }
 
 func (d *PostgresDatabase) GetChannelByName(name string, uploadID int64) (*Channel, error) {
-	channel := &Channel{}
-	var buildID sql.NullInt64
-	err := d.db.QueryRow(`
-		SELECT id, upload_id, name, current_build_id, created_at, updated_at
-		FROM channels WHERE name = $1 AND upload_id = $2`, name, uploadID).Scan(
-		&channel.ID, &channel.UploadID, &channel.Name, &buildID,
-		&channel.CreatedAt, &channel.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if buildID.Valid {
-		channel.CurrentBuildID = &buildID.Int64
-	}
-	return channel, nil
+	return scanChannel(d.db.QueryRow(`
+		SELECT `+channelColumns+`
+		FROM channels WHERE name = $1 AND upload_id = $2`, name, uploadID))
 }
 
 func (d *PostgresDatabase) CreateChannel(channel *Channel) error {

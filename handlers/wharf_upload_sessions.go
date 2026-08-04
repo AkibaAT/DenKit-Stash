@@ -18,7 +18,7 @@ func (h *WharfHandlers) StartUploadSession(w http.ResponseWriter, r *http.Reques
 	sessionID := mux.Vars(r)["id"]
 	session, err := h.db.GetUploadSessionByID(sessionID)
 	if err != nil {
-		http.Error(w, `{"errors":["upload session not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "upload session not found")
 		return
 	}
 	if session.State == "" {
@@ -35,7 +35,7 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 	sessionID := mux.Vars(r)["id"]
 	session, err := h.db.GetUploadSessionByID(sessionID)
 	if err != nil {
-		http.Error(w, `{"errors":["upload session not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "upload session not found")
 		return
 	}
 	if session.State == "completed" {
@@ -56,13 +56,13 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 	if matches == nil {
 		emptyFinalMatches := emptyFinalRangePattern.FindStringSubmatch(contentRange)
 		if emptyFinalMatches == nil {
-			http.Error(w, `{"errors":["invalid content range"]}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid content range")
 			return
 		}
 		start, _ := strconv.ParseInt(emptyFinalMatches[1], 10, 64)
 		total, _ := strconv.ParseInt(emptyFinalMatches[2], 10, 64)
 		if total > maxUploadSessionBytes() {
-			http.Error(w, `{"errors":["upload session exceeds maximum size"]}`, http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, "upload session exceeds maximum size")
 			return
 		}
 		if start != session.Size || total != session.Size {
@@ -70,7 +70,7 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if err = h.commitUploadSession(r.Context(), session, h.uploadSessionPath(session.ID)); err != nil {
-			http.Error(w, fmt.Sprintf(`{"errors":["%s"]}`, err.Error()), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -85,67 +85,67 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if end < start {
-		http.Error(w, `{"errors":["invalid content range"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid content range")
 		return
 	}
 	chunkSize := end - start + 1
 	if session.Size+chunkSize > maxUploadSessionBytes() {
-		http.Error(w, `{"errors":["upload session exceeds maximum size"]}`, http.StatusRequestEntityTooLarge)
+		writeError(w, http.StatusRequestEntityTooLarge, "upload session exceeds maximum size")
 		return
 	}
 	var total int64
 	if totalStr != "*" {
 		total, _ = strconv.ParseInt(totalStr, 10, 64)
 		if total > maxUploadSessionBytes() {
-			http.Error(w, `{"errors":["upload session exceeds maximum size"]}`, http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, "upload session exceeds maximum size")
 			return
 		}
 		if start+chunkSize != total {
-			http.Error(w, `{"errors":["final upload size mismatch"]}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "final upload size mismatch")
 			return
 		}
 	}
 
 	sessionPath := h.uploadSessionPath(session.ID)
 	if err = os.MkdirAll(filepath.Dir(sessionPath), 0755); err != nil {
-		http.Error(w, `{"errors":["could not prepare upload session"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not prepare upload session")
 		return
 	}
 
 	file, err := os.OpenFile(sessionPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		http.Error(w, `{"errors":["could not open upload session"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not open upload session")
 		return
 	}
 	if err = file.Truncate(session.Size); err != nil {
 		_ = file.Close()
-		http.Error(w, `{"errors":["could not prepare upload session"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not prepare upload session")
 		return
 	}
 	if _, err = file.Seek(session.Size, io.SeekStart); err != nil {
 		_ = file.Close()
-		http.Error(w, `{"errors":["could not prepare upload session"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not prepare upload session")
 		return
 	}
 	written, copyErr := io.Copy(file, io.LimitReader(r.Body, chunkSize))
 	closeErr := file.Close()
 	if copyErr != nil {
-		http.Error(w, `{"errors":["could not write upload bytes"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not write upload bytes")
 		return
 	}
 	if closeErr != nil {
-		http.Error(w, `{"errors":["could not close upload session"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not close upload session")
 		return
 	}
 	if written != chunkSize {
-		http.Error(w, `{"errors":["content length does not match content range"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "content length does not match content range")
 		return
 	}
 
 	session.Size += written
 	if totalStr == "*" {
 		if err = h.db.UpdateUploadSession(session); err != nil {
-			http.Error(w, `{"errors":["could not update upload session"]}`, http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "could not update upload session")
 			return
 		}
 		h.writeResumeRange(w, session.Size)
@@ -153,12 +153,12 @@ func (h *WharfHandlers) PutUploadSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	if session.Size != total {
-		http.Error(w, `{"errors":["final upload size mismatch"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "final upload size mismatch")
 		return
 	}
 
 	if err = h.commitUploadSession(r.Context(), session, sessionPath); err != nil {
-		http.Error(w, fmt.Sprintf(`{"errors":["%s"]}`, err.Error()), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

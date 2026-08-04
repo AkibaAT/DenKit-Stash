@@ -3,13 +3,9 @@ package handlers
 import (
 	"denkit-stash/auth"
 	"denkit-stash/models"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/mux"
 )
 
 type CoreHandlers struct {
@@ -20,248 +16,135 @@ func NewCoreHandlers(db models.Database) *CoreHandlers {
 	return &CoreHandlers{db: db}
 }
 
-// GET /profile - Get current user profile
 func (h *CoreHandlers) GetProfile(w http.ResponseWriter, r *http.Request) {
 	user := auth.MustGetUser(r.Context())
-
-	response := map[string]interface{}{
-		"user": map[string]interface{}{
-			"id":           user.ID,
-			"username":     user.Username,
-			"display_name": user.DisplayName,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, ProfileResponse{User: PublicUserResponse{
+		ID: user.ID, Username: user.Username, DisplayName: user.DisplayName,
+	}})
 }
 
-// GET /profile/games - List games for current user
 func (h *CoreHandlers) GetProfileGames(w http.ResponseWriter, r *http.Request) {
 	user := auth.MustGetUser(r.Context())
-
 	games, err := h.db.GetGamesByUserID(user.ID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"errors":["%s"]}`, err.Error()), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
-	response := map[string]interface{}{
-		"games": games,
+	var responseGames []ProfileGameResponse
+	for _, game := range games {
+		responseGames = append(responseGames, ProfileGameResponse{
+			ID: game.ID, UserID: game.UserID, Title: game.Title, ShortText: game.ShortText,
+			Type: game.Type, Classification: game.Classification, URL: game.URL,
+			CreatedAt: game.CreatedAt, UpdatedAt: game.UpdatedAt,
+		})
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, GameListResponse{Games: responseGames})
 }
 
-// GET /games/{id} - Get game by ID
 func (h *CoreHandlers) GetGame(w http.ResponseWriter, r *http.Request) {
-	gameIDStr := mux.Vars(r)["id"]
-	gameID, err := strconv.ParseInt(gameIDStr, 10, 64)
+	gameID, err := pathInt64(r, "id")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid game id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid game id")
 		return
 	}
 
 	user, game, err := h.db.GetGameByID(gameID)
 	if err != nil {
-		http.Error(w, `{"errors":["game not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "game not found")
 		return
 	}
 
-	response := map[string]interface{}{
-		"game": map[string]interface{}{
-			"id":             game.ID,
-			"title":          game.Title,
-			"short_text":     game.ShortText,
-			"type":           game.Type,
-			"classification": game.Classification,
-			"url":            game.URL,
-			"user": map[string]interface{}{
-				"id":           user.ID,
-				"username":     user.Username,
-				"display_name": user.DisplayName,
-			},
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, GameEnvelopeResponse{Game: GameResponse{
+		ID: game.ID, Title: game.Title, ShortText: game.ShortText, Type: game.Type,
+		Classification: game.Classification, URL: game.URL,
+		User: PublicUserResponse{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName},
+	}})
 }
 
-// GET /games/{id}/uploads - List uploads for a game
 func (h *CoreHandlers) GetGameUploads(w http.ResponseWriter, r *http.Request) {
-	gameIDStr := mux.Vars(r)["id"]
-	gameID, err := strconv.ParseInt(gameIDStr, 10, 64)
+	gameID, err := pathInt64(r, "id")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid game id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid game id")
 		return
 	}
-
-	// Check if game exists
-	_, _, err = h.db.GetGameByID(gameID)
-	if err != nil {
-		http.Error(w, `{"errors":["game not found"]}`, http.StatusNotFound)
+	if _, _, err = h.db.GetGameByID(gameID); err != nil {
+		writeError(w, http.StatusNotFound, "game not found")
 		return
 	}
 
 	uploads, err := h.db.GetUploadsByGameID(gameID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"errors":["%s"]}`, err.Error()), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
-
-	// Convert uploads to response format
-	var uploadsResponse []map[string]interface{}
+	var responseUploads []CoreUploadResponse
 	for _, upload := range uploads {
-		uploadsResponse = append(uploadsResponse, map[string]interface{}{
-			"id":           upload.ID,
-			"filename":     upload.Filename,
-			"display_name": upload.DisplayName,
-			"size":         upload.Size,
-			"storage":      upload.Storage,
-			"type":         upload.Type,
-			"platforms":    upload.Platforms,
-		})
+		responseUploads = append(responseUploads, newCoreUploadResponse(upload))
 	}
-
-	response := map[string]interface{}{
-		"uploads": uploadsResponse,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, UploadListResponse{Uploads: responseUploads})
 }
 
-// POST /games/{id}/download-sessions - Create a download session UUID for butlerd install/update flows
 func (h *CoreHandlers) CreateDownloadSession(w http.ResponseWriter, r *http.Request) {
-	gameIDStr := mux.Vars(r)["id"]
-	gameID, err := strconv.ParseInt(gameIDStr, 10, 64)
+	gameID, err := pathInt64(r, "id")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid game id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid game id")
 		return
 	}
-
 	if _, _, err = h.db.GetGameByID(gameID); err != nil {
-		http.Error(w, `{"errors":["game not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "game not found")
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"uuid": uuid.New().String(),
-	})
+	writeJSON(w, http.StatusOK, DownloadSessionResponse{UUID: uuid.New().String()})
 }
 
-// GET /uploads/{id} - Get upload by ID
 func (h *CoreHandlers) GetUpload(w http.ResponseWriter, r *http.Request) {
-	uploadIDStr := mux.Vars(r)["id"]
-	uploadID, err := strconv.ParseInt(uploadIDStr, 10, 64)
+	uploadID, err := pathInt64(r, "id")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid upload id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid upload id")
 		return
 	}
-
 	upload, err := h.db.GetUploadByID(uploadID)
 	if err != nil {
-		http.Error(w, `{"errors":["upload not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "upload not found")
 		return
 	}
-
-	response := map[string]interface{}{
-		"upload": map[string]interface{}{
-			"id":           upload.ID,
-			"filename":     upload.Filename,
-			"display_name": upload.DisplayName,
-			"size":         upload.Size,
-			"storage":      upload.Storage,
-			"type":         upload.Type,
-			"platforms":    upload.Platforms,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, UploadEnvelopeResponse{Upload: newCoreUploadResponse(upload)})
 }
 
-// GET /uploads/{id}/builds - List builds for an upload
 func (h *CoreHandlers) GetUploadBuilds(w http.ResponseWriter, r *http.Request) {
-	uploadIDStr := mux.Vars(r)["id"]
-	uploadID, err := strconv.ParseInt(uploadIDStr, 10, 64)
+	uploadID, err := pathInt64(r, "id")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid upload id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid upload id")
 		return
 	}
-
-	// Check if upload exists
-	_, err = h.db.GetUploadByID(uploadID)
-	if err != nil {
-		http.Error(w, `{"errors":["upload not found"]}`, http.StatusNotFound)
+	if _, err = h.db.GetUploadByID(uploadID); err != nil {
+		writeError(w, http.StatusNotFound, "upload not found")
 		return
 	}
 
 	builds, err := h.db.GetBuildsByUploadID(uploadID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"errors":["%s"]}`, err.Error()), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
-
-	// Convert builds to response format
-	var buildsResponse []map[string]interface{}
+	var responseBuilds []CoreBuildResponse
 	for _, build := range builds {
-		buildData := map[string]interface{}{
-			"id":           build.ID,
-			"user_version": build.UserVersion,
-			"state":        build.State,
-			"created_at":   build.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		}
-
-		if build.ParentBuildID != nil {
-			buildData["parent_build_id"] = *build.ParentBuildID
-		}
-
-		buildsResponse = append(buildsResponse, buildData)
+		responseBuilds = append(responseBuilds, newCoreBuildResponse(build, false))
 	}
-
-	response := map[string]interface{}{
-		"builds": buildsResponse,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, BuildListResponse{Builds: responseBuilds})
 }
 
-// GET /builds/{id} - Get build by ID
 func (h *CoreHandlers) GetBuild(w http.ResponseWriter, r *http.Request) {
-	buildIDStr := mux.Vars(r)["id"]
-	buildID, err := strconv.ParseInt(buildIDStr, 10, 64)
+	buildID, err := pathInt64(r, "id")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid build id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid build id")
 		return
 	}
-
 	build, err := h.db.GetBuildByID(buildID)
 	if err != nil {
-		http.Error(w, `{"errors":["build not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "build not found")
 		return
 	}
-
-	buildData := map[string]interface{}{
-		"id":           build.ID,
-		"upload_id":    build.UploadID,
-		"user_version": build.UserVersion,
-		"state":        build.State,
-		"created_at":   build.CreatedAt.Format("2006-01-02T15:04:05Z"),
-	}
-
-	if build.ParentBuildID != nil {
-		buildData["parent_build_id"] = *build.ParentBuildID
-	}
-
-	response := map[string]interface{}{
-		"build": buildData,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, BuildEnvelopeResponse{Build: newCoreBuildResponse(build, true)})
 }

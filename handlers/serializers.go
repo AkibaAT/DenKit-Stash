@@ -12,77 +12,79 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func serializeBuildFile(file *models.BuildFile) map[string]interface{} {
-	return map[string]interface{}{
-		"id":        file.ID,
-		"size":      file.Size,
-		"state":     file.State,
-		"type":      file.Type,
-		"subType":   file.SubType,
-		"createdAt": formatTime(file.CreatedAt),
-		"updatedAt": formatTime(file.UpdatedAt),
+func newWharfBuildFileResponse(file *models.BuildFile) WharfBuildFileResponse {
+	return WharfBuildFileResponse{
+		ID:        file.ID,
+		Size:      file.Size,
+		State:     file.State,
+		Type:      file.Type,
+		SubType:   file.SubType,
+		CreatedAt: formatTime(file.CreatedAt),
+		UpdatedAt: formatTime(file.UpdatedAt),
 	}
 }
 
-func serializeBuildFileList(files []*models.BuildFile) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(files))
+func newWharfBuildFileResponses(files []*models.BuildFile) []WharfBuildFileResponse {
+	out := make([]WharfBuildFileResponse, 0, len(files))
 	for _, file := range files {
-		out = append(out, serializeBuildFile(file))
+		out = append(out, newWharfBuildFileResponse(file))
 	}
 	return out
 }
 
-func serializeBuild(build *models.Build, files []*models.BuildFile) map[string]interface{} {
+func newWharfBuildResponse(build *models.Build, files []*models.BuildFile) WharfBuildResponse {
 	parentBuildID := int64(0)
+	var parentBuild *WharfParentBuildResponse
 	if build.ParentBuildID != nil {
 		parentBuildID = *build.ParentBuildID
+		parentBuild = &WharfParentBuildResponse{ID: parentBuildID}
 	}
 
-	out := map[string]interface{}{
-		"id":            build.ID,
-		"uploadId":      build.UploadID,
-		"parentBuildId": parentBuildID,
-		"version":       build.ID,
-		"state":         build.State,
-		"userVersion":   build.UserVersion,
-		"files":         serializeBuildFileList(files),
-		"createdAt":     formatTime(build.CreatedAt),
-		"updatedAt":     formatTime(build.UpdatedAt),
-	}
-	if parentBuildID != 0 {
-		out["parentBuild"] = map[string]interface{}{
-			"id": parentBuildID,
-		}
-	} else {
-		out["parentBuild"] = nil
-	}
-	return out
-}
-
-func serializeUpload(upload *models.Upload) map[string]interface{} {
-	return map[string]interface{}{
-		"id":          upload.ID,
-		"gameId":      upload.GameID,
-		"filename":    upload.Filename,
-		"displayName": upload.DisplayName,
-		"size":        upload.Size,
-		"storage":     upload.Storage,
-		"type":        upload.Type,
-		"platforms":   upload.Platforms,
-		"createdAt":   formatTime(upload.CreatedAt),
-		"updatedAt":   formatTime(upload.UpdatedAt),
+	return WharfBuildResponse{
+		ID:            build.ID,
+		UploadID:      build.UploadID,
+		ParentBuildID: parentBuildID,
+		ParentBuild:   parentBuild,
+		Version:       build.ID,
+		State:         build.State,
+		UserVersion:   build.UserVersion,
+		Files:         newWharfBuildFileResponses(files),
+		CreatedAt:     formatTime(build.CreatedAt),
+		UpdatedAt:     formatTime(build.UpdatedAt),
 	}
 }
 
-func serializeChannel(channel *models.Channel, upload *models.Upload, head *models.Build, files []*models.BuildFile) map[string]interface{} {
-	out := map[string]interface{}{
-		"name": channel.Name,
-		"upload": map[string]interface{}{
-			"id": upload.ID,
-		},
+func newCoreUploadResponse(upload *models.Upload) CoreUploadResponse {
+	return CoreUploadResponse{
+		ID:          upload.ID,
+		Filename:    upload.Filename,
+		DisplayName: upload.DisplayName,
+		Size:        upload.Size,
+		Storage:     upload.Storage,
+		Type:        upload.Type,
+		Platforms:   upload.Platforms,
 	}
+}
+
+func newCoreBuildResponse(build *models.Build, includeUploadID bool) CoreBuildResponse {
+	response := CoreBuildResponse{
+		ID:            build.ID,
+		UserVersion:   build.UserVersion,
+		State:         build.State,
+		ParentBuildID: build.ParentBuildID,
+		CreatedAt:     formatTime(build.CreatedAt),
+	}
+	if includeUploadID {
+		response.UploadID = build.UploadID
+	}
+	return response
+}
+
+func newWharfChannelResponse(channel *models.Channel, upload *models.Upload, head *models.Build, files []*models.BuildFile) WharfChannelResponse {
+	out := WharfChannelResponse{Name: channel.Name, Upload: WharfUploadRefResponse{ID: upload.ID}}
 	if head != nil {
-		out["head"] = serializeBuild(head, files)
+		response := newWharfBuildResponse(head, files)
+		out.Head = &response
 	}
 	return out
 }

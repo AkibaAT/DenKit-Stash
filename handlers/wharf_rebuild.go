@@ -4,6 +4,7 @@ import (
 	"context"
 	"denkit-stash/models"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -72,7 +73,7 @@ func (h *WharfHandlers) warmArchive(ctx context.Context, buildID int64) (*models
 		return nil, false
 	}
 	if err = h.db.TouchBuildFileAccess(file.ID); err != nil {
-		fmt.Printf("Warning: failed to touch archive access for build %d: %v\n", buildID, err)
+		log.Printf("warning: failed to touch archive access for build %d: %v", buildID, err)
 	}
 	return file, true
 }
@@ -131,7 +132,7 @@ func (h *WharfHandlers) rebuildArchive(ctx context.Context, buildID int64) (*mod
 		if wasEvicted {
 			archiveFile.State = "evicted"
 			if revertErr := h.db.UpdateBuildFile(archiveFile); revertErr != nil {
-				fmt.Printf("Warning: failed to revert archive state for build %d: %v\n", buildID, revertErr)
+				log.Printf("warning: failed to revert archive state for build %d: %v", buildID, revertErr)
 			}
 		}
 		return nil, fmt.Errorf("failed to rebuild archive for build %d: %w", buildID, err)
@@ -199,9 +200,9 @@ func (h *WharfHandlers) replayArchiveChain(ctx context.Context, build *models.Bu
 		return nil, err
 	}
 	if err = h.db.TouchBuildFileAccess(archiveFile.ID); err != nil {
-		fmt.Printf("Warning: failed to touch archive access for build %d: %v\n", build.ID, err)
+		log.Printf("warning: failed to touch archive access for build %d: %v", build.ID, err)
 	}
-	fmt.Printf("Rebuilt archive for build %d from %d patch step(s)\n", build.ID, len(chain))
+	log.Printf("rebuilt archive for build %d from %d patch step(s)", build.ID, len(chain))
 	return archiveFile, nil
 }
 

@@ -14,19 +14,17 @@ func decodeJSONOrFormRequest(w http.ResponseWriter, r *http.Request, dest interf
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			http.Error(w, `{"errors":["request body too large"]}`, http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}
-		fmt.Printf("Error reading request body: %v\n", err)
-		http.Error(w, `{"errors":["could not read request body"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "could not read request body")
 		return false
 	}
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.Contains(contentType, "application/json") {
 		if err = json.Unmarshal(body, dest); err != nil {
-			fmt.Printf("JSON parsing error: %v\n", err)
-			http.Error(w, fmt.Sprintf(`{"errors":["invalid request body: %s"]}`, err.Error()), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %s", err.Error()))
 			return false
 		}
 		return true
@@ -34,13 +32,12 @@ func decodeJSONOrFormRequest(w http.ResponseWriter, r *http.Request, dest interf
 
 	r.Body = io.NopCloser(strings.NewReader(string(body)))
 	if err = r.ParseForm(); err != nil {
-		fmt.Printf("Form parsing error: %v\n", err)
-		http.Error(w, fmt.Sprintf(`{"errors":["invalid form data: %s"]}`, err.Error()), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid form data: %s", err.Error()))
 		return false
 	}
 	if assignForm != nil {
 		if err = assignForm(); err != nil {
-			http.Error(w, fmt.Sprintf(`{"errors":["%s"]}`, err.Error()), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, err.Error())
 			return false
 		}
 	}

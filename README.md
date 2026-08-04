@@ -73,27 +73,7 @@ Storage setup:
 - Set `S3_BUCKET` to the private bucket DenKit should use for build files.
 - Set `S3_ACCESS_KEY` and `S3_SECRET_KEY` to credentials with read, write, and multipart-upload access for that bucket.
 
-At startup, DenKit checks whether `S3_BUCKET` exists. If the configured credentials can create buckets, DenKit creates it automatically. DenKit then removes any bucket policy so objects stay private and are only exposed through signed upload and download URLs. The configured credentials therefore need bucket policy management permission in addition to object read/write permissions.
-
-If you want to create the bucket manually before startup:
-
-```bash
-docker run --rm --network denkit-network \
-  -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
-  -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
-  -e AWS_DEFAULT_REGION="${S3_REGION:-us-east-1}" \
-  amazon/aws-cli s3api create-bucket \
-  --endpoint-url http://rustfs:9000 \
-  --bucket "$S3_BUCKET"
-
-docker run --rm --network denkit-network \
-  -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
-  -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
-  -e AWS_DEFAULT_REGION="${S3_REGION:-us-east-1}" \
-  amazon/aws-cli s3api delete-bucket-policy \
-  --endpoint-url http://rustfs:9000 \
-  --bucket "$S3_BUCKET"
-```
+At startup, DenKit checks whether `S3_BUCKET` exists and creates it when the configured credentials allow that. See [DEPLOYMENT.md](DEPLOYMENT.md) for required permissions, private-bucket behavior, and manual bucket checks.
 
 The bundled compose setup uses `RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` for RustFS. You can use that account for simple private deployments, or create a narrower access key with bucket create/read/write/multipart and bucket-policy permissions, then put it in `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
 
@@ -103,19 +83,7 @@ Create a DenKit Stash API key:
 ./denkit-stash --create-user=alice
 ```
 
-Then push with butler:
-
-```bash
-export BUTLER_API_KEY=printed-api-key
-butler --address=https://api.denkit.example.com push ./build alice/my-game:stable
-```
-
-Use the same key for status and fetch:
-
-```bash
-butler --address=https://api.denkit.example.com status alice/my-game:stable
-butler --address=https://api.denkit.example.com fetch alice/my-game:stable ./install
-```
+Use the key with the local-development butler commands above, or configure the same variables against your deployed API address.
 
 ## Configuration
 
@@ -135,6 +103,7 @@ S3-Compatible Storage:
 - `S3_ACCESS_KEY`
 - `S3_SECRET_KEY`
 - `S3_BUCKET`
+- `S3_REGION`
 - `S3_USE_SSL`
 
 Application:
@@ -148,12 +117,17 @@ Application:
 - `DENKIT_HTTP_IDLE_TIMEOUT`
 - `DENKIT_MAX_REQUEST_BODY_BYTES`
 - `DENKIT_MAX_UPLOAD_SESSION_BYTES`
+- `DENKIT_ARCHIVE_GC_ENABLED`
+- `DENKIT_ARCHIVE_TTL`
+- `DENKIT_ARCHIVE_GC_INTERVAL`
+- `DENKIT_ARCHIVE_GC_BATCH`
+- `DENKIT_ARCHIVE_REBUILD_TIMEOUT`
 
 Production deployments should keep `ENABLE_DEV_ENDPOINTS=false`. When set to `true`, local-only development OAuth helpers and the authenticated `/test/storage` route are registered.
 
-`DENKIT_API_KEY_HASH_SECRET` is required before creating or authenticating users. It is used to store non-reversible HMAC-SHA256 digests of API keys instead of raw bearer credentials. Generate a unique secret per deployment, for example with `openssl rand -hex 32`, and keep it with the rest of the deployment secrets. Existing raw keys from early development databases are converted to digests on startup when this secret is configured.
+`DENKIT_API_KEY_HASH_SECRET` is required before creating or authenticating users. It is used to store non-reversible HMAC-SHA256 digests of API keys instead of raw bearer credentials. Generate a unique secret per deployment, for example with `openssl rand -hex 32`, and keep it with the rest of the deployment secrets.
 
-Clients should send API keys in `Authorization: Bearer <key>` or through the `BUTLER_API_KEY` environment variable used by butler. Query-string API keys are accepted only for butler/Wharf compatibility and should not be used by new integrations, because query strings are routinely captured by proxy and access logs. DenKit redacts request query strings from its own logs.
+Clients should send API keys in `Authorization: Bearer <key>` or through the `BUTLER_API_KEY` environment variable used by butler. Query-string API keys are accepted only for butler/Wharf compatibility and should not be used by new integrations, because query strings are routinely captured by proxy and access logs. DenKit does not log HTTP request targets.
 
 HTTP timeout values use Go duration syntax such as `5s`, `2m`, or `30m`. DenKit defaults to a 5 second read-header timeout, 30 minute read and write timeouts for large client uploads, and a 2 minute idle timeout. Metadata JSON/form requests are capped at 1 MiB by default, and deferred upload sessions are capped at 50 GiB by default.
 
@@ -269,4 +243,5 @@ MIT. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-DenKit Stash builds on the open publishing workflow pioneered by itch.io's MIT-licensed [`butler`](https://github.com/itchio/butler) client and MIT-licensed [`wharf`](https://github.com/itchio/wharf) protocol implementation. DenKit is independent software and is not affiliated with or endorsed by itch.io.
+- itch.io's MIT-licensed [`butler`](https://github.com/itchio/butler) client
+- itch.io's MIT-licensed [`wharf`](https://github.com/itchio/wharf) protocol implementation

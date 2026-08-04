@@ -97,43 +97,36 @@ func ListUsers(db models.Database) error {
 }
 
 func DeactivateUser(db models.Database, username string) error {
-	user, err := db.GetUserByUsername(username)
-	if err != nil {
-		return fmt.Errorf("user '%s' not found", username)
-	}
-
-	if !user.IsActive {
-		fmt.Printf("User '%s' is already deactivated.\n", username)
-		return nil
-	}
-
-	user.IsActive = false
-	err = db.UpdateUser(user)
-	if err != nil {
-		return fmt.Errorf("failed to deactivate user: %v", err)
-	}
-
-	fmt.Printf("User '%s' has been deactivated.\n", username)
-	return nil
+	return setUserActive(db, username, false)
 }
 
 func ActivateUser(db models.Database, username string) error {
+	return setUserActive(db, username, true)
+}
+
+func setUserActive(db models.Database, username string, active bool) error {
 	user, err := db.GetUserByUsername(username)
 	if err != nil {
 		return fmt.Errorf("user '%s' not found", username)
 	}
 
-	if user.IsActive {
-		fmt.Printf("User '%s' is already active.\n", username)
+	state := "deactivated"
+	action := "deactivate"
+	if active {
+		state = "active"
+		action = "activate"
+	}
+	if user.IsActive == active {
+		fmt.Printf("User '%s' is already %s.\n", username, state)
 		return nil
 	}
 
-	user.IsActive = true
+	user.IsActive = active
 	err = db.UpdateUser(user)
 	if err != nil {
-		return fmt.Errorf("failed to activate user: %v", err)
+		return fmt.Errorf("failed to %s user: %v", action, err)
 	}
 
-	fmt.Printf("User '%s' has been activated.\n", username)
+	fmt.Printf("User '%s' has been %s.\n", username, state)
 	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"denkit-stash/auth"
 	"denkit-stash/handlers"
@@ -38,6 +39,8 @@ type storageConfig struct {
 	useSSL         bool
 }
 
+type storageTestResponse = handlers.StorageTestResponse
+
 type objectStorageClients struct {
 	client        *s3.Client
 	presignClient *s3.PresignClient
@@ -61,7 +64,7 @@ func readStorageConfig() (storageConfig, error) {
 		accessKey:      os.Getenv("S3_ACCESS_KEY"),
 		secretKey:      os.Getenv("S3_SECRET_KEY"),
 		bucketName:     os.Getenv("S3_BUCKET"),
-		region:         getEnvOrDefault("S3_REGION", "us-east-1"),
+		region:         cmp.Or(os.Getenv("S3_REGION"), "us-east-1"),
 		useSSL:         useSSL,
 	}
 	if cfg.endpoint == "" {
@@ -148,7 +151,7 @@ func initializeObjectStorage() (*objectStorageClients, error) {
 		if _, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(cfg.bucketName)}); err != nil {
 			return nil, fmt.Errorf("failed to create bucket: %v", err)
 		}
-		fmt.Printf("Created storage bucket: %s\n", cfg.bucketName)
+		log.Printf("created storage bucket: %s", cfg.bucketName)
 	}
 
 	if _, err = client.DeleteBucketPolicy(ctx, &s3.DeleteBucketPolicyInput{Bucket: aws.String(cfg.bucketName)}); err != nil && !isNoSuchBucketPolicyError(err) {
@@ -184,13 +187,6 @@ func isNoSuchBucketPolicyError(err error) bool {
 	}
 }
 
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
 func devEndpointsEnabled() bool {
 	return os.Getenv("ENABLE_DEV_ENDPOINTS") == "true"
 }
@@ -212,7 +208,7 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed <= 0 {
-		fmt.Printf("Ignoring invalid %s=%q; using %s\n", key, value, fallback)
+		log.Printf("ignoring invalid %s=%q; using %s", key, value, fallback)
 		return fallback
 	}
 	return parsed
@@ -225,7 +221,7 @@ func cleanStaleScratchDirs() {
 	tempDir := os.TempDir()
 	entries, err := os.ReadDir(tempDir)
 	if err != nil {
-		fmt.Printf("Warning: could not scan %s for stale scratch dirs: %v\n", tempDir, err)
+		log.Printf("warning: could not scan %s for stale scratch dirs: %v", tempDir, err)
 		return
 	}
 	for _, entry := range entries {
@@ -235,9 +231,9 @@ func cleanStaleScratchDirs() {
 		if strings.HasPrefix(entry.Name(), "denkit-build-") || strings.HasPrefix(entry.Name(), "denkit-rebuild-") {
 			path := tempDir + string(os.PathSeparator) + entry.Name()
 			if err := os.RemoveAll(path); err != nil {
-				fmt.Printf("Warning: could not remove stale scratch dir %s: %v\n", path, err)
+				log.Printf("warning: could not remove stale scratch dir %s: %v", path, err)
 			} else {
-				fmt.Printf("Removed stale scratch dir %s\n", path)
+				log.Printf("removed stale scratch dir %s", path)
 			}
 		}
 	}
@@ -252,7 +248,7 @@ func archiveGCConfigFromEnv() handlers.ArchiveGCConfig {
 		if parsed, err := strconv.Atoi(batch); err == nil && parsed > 0 {
 			cfg.BatchLimit = parsed
 		} else {
-			fmt.Printf("Ignoring invalid DENKIT_ARCHIVE_GC_BATCH=%q; using %d\n", batch, cfg.BatchLimit)
+			log.Printf("ignoring invalid DENKIT_ARCHIVE_GC_BATCH=%q; using %d", batch, cfg.BatchLimit)
 		}
 	}
 	return cfg
@@ -271,7 +267,7 @@ func newHTTPServer(address string, handler http.Handler) *http.Server {
 
 func devObjectStorageTestHandler(storageClient *s3.Client, presignClient *s3.PresignClient, bucketName string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		testContent := "Hello from S3-compatible storage! This is a test file."
+		testContent := "Hello from S3-compatible storage. This is a test file."
 		objectName := "test/hello.txt"
 
 		ctx := context.Background()
@@ -299,11 +295,9 @@ func devObjectStorageTestHandler(storageClient *s3.Client, presignClient *s3.Pre
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"message":      "Test file uploaded successfully",
-			"signed_url":   signedURL.URL,
-			"expires_in":   "1 hour",
-			"test_content": testContent,
+		json.NewEncoder(w).Encode(handlers.StorageTestResponse{
+			Message: "Test file uploaded", SignedURL: signedURL.URL,
+			ExpiresIn: "1 hour", TestContent: testContent,
 		})
 	}
 }
@@ -362,8 +356,7 @@ func registerDevRoutes(api huma.API, db models.Database, storageClient *s3.Clien
 		return
 	}
 
-	fmt.Println("Development endpoints enabled")
-	registerRaw[storageTestResponse](api, authOperation("dev-storage-test", http.MethodGet, "/test/storage", "Development-only object storage smoke test", "Development", 401, 500), authHandler(db, devObjectStorageTestHandler(storageClient, presignClient, bucketName)))
+	registerRaw[handlers.StorageTestResponse](api, authOperation("dev-storage-test", http.MethodGet, "/test/storage", "Development-only object storage smoke test", "Development", 401, 500), authHandler(db, devObjectStorageTestHandler(storageClient, presignClient, bucketName)))
 	registerRawOperation(api, noSecurityOperation("dev-oauth-authorize", http.MethodGet, "/oauth/authorize", "Development-only OAuth compatibility redirect", "Development", 400), devOAuthHandler(db), map[int]reflect.Type{302: reflect.TypeOf("")})
 	registerRawOperation(api, noSecurityOperation("dev-user-oauth", http.MethodGet, "/user/oauth", "Development-only OAuth compatibility redirect", "Development", 400), devOAuthHandler(db), map[int]reflect.Type{302: reflect.TypeOf("")})
 }
@@ -382,19 +375,16 @@ func main() {
 	)
 	flag.Parse()
 
-	fmt.Println("Using PostgreSQL database")
 	db, err := models.NewPostgresDatabase()
 	if err != nil {
 		log.Fatalf("Failed to open PostgreSQL database: %v", err)
 	}
 	defer db.Close()
 
-	fmt.Println("Using S3-compatible object storage")
 	storage, err := initializeObjectStorage()
 	if err != nil {
 		log.Fatalf("Failed to initialize object storage: %v", err)
 	}
-	fmt.Printf("Object storage initialized with endpoint: %s, bucket: %s\n", storage.config.endpoint, storage.bucketName)
 
 	if *createUser != "" {
 		_, err := auth.CreateUser(db, *createUser, "user")
@@ -463,8 +453,6 @@ func main() {
 
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			fmt.Printf("REQUEST: %s %s\n", req.Method, requestLogTarget(req))
-
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -482,17 +470,7 @@ func main() {
 	registerDenKitAPI(api, db, coreHandlers, wharfHandlers)
 	registerDevRoutes(api, db, storage.client, storage.presignClient, storage.bucketName)
 
-	fmt.Printf("Starting server on port %s\n", *port)
-	fmt.Printf("Database: PostgreSQL (%s:%s/%s)\n", os.Getenv("POSTGRES_HOST"), os.Getenv("POSTGRES_PORT"), os.Getenv("POSTGRES_DB"))
-	fmt.Printf("Storage: S3-compatible (%s)\n", storage.config.endpoint)
-	fmt.Printf("\nTo create a test user, run:\n")
-	fmt.Printf("  %s -create-user=myusername\n", os.Args[0])
-	fmt.Printf("\nThen configure butler with:\n")
-	fmt.Printf("  butler --address=http://127.0.0.1:%s login\n", *port)
-	fmt.Printf("\nOr add '127.0.0.1 api.localhost' to /etc/hosts and use:\n")
-	fmt.Printf("  butler --address=http://localhost:%s login\n", *port)
-
 	address := "0.0.0.0:" + *port
-	fmt.Printf("Server listening on %s (all interfaces)\n", address)
+	log.Printf("listening on %s", address)
 	log.Fatal(newHTTPServer(address, r).ListenAndServe())
 }

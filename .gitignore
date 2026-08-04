@@ -35,7 +35,6 @@ logs/
 
 # Backup files
 backups/
-*.sql
 *.tar.gz
 
 # SSL certificates
@@ -44,7 +43,6 @@ backups/
 *.pem
 
 # Development files
-.ddev/
 !.ddev/
 .ddev/*
 !.ddev/config.yaml
@@ -57,9 +55,6 @@ backups/
 !.ddev/commands/host/
 .ddev/commands/host/*
 !.ddev/commands/host/rustfs
-simple-denkit-stash/
-fetch-test-*/
-
 # Temporary files
 tmp/
 temp/

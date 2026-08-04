@@ -25,18 +25,6 @@ var channelPlatformRules = []struct {
 	{platform: "android", aliases: []string{"android"}},
 }
 
-func platformsForChannelName(channelName string) string {
-	channelTokens := channelNameTokens(channelName)
-
-	return platformsForTokens(channelTokens)
-}
-
-func platformsForArchiveFilename(filename string) string {
-	filenameTokens := channelNameTokens(filename)
-
-	return platformsForTokens(filenameTokens)
-}
-
 func platformsForTokens(tokens map[string]bool) string {
 	platforms := make([]string, 0, len(channelPlatformRules))
 
@@ -68,7 +56,6 @@ func channelNameTokens(channelName string) map[string]bool {
 	return tokens
 }
 
-// validateNamespaceAccess checks if the user can access the given namespace.
 func (h *WharfHandlers) validateNamespaceAccess(user *models.User, namespace string) error {
 	if !user.CanAccessNamespace(namespace) {
 		return fmt.Errorf("access denied: user '%s' cannot access namespace '%s'", user.Username, namespace)
@@ -77,25 +64,17 @@ func (h *WharfHandlers) validateNamespaceAccess(user *models.User, namespace str
 }
 
 func (h *WharfHandlers) authorizeBuildAccess(r *http.Request, buildID int64) error {
-	requestUser, ok := auth.GetUser(r.Context())
-	if !ok {
-		return fmt.Errorf("authentication required")
-	}
-
 	build, err := h.db.GetBuildByID(buildID)
 	if err != nil {
 		return err
 	}
-	return h.authorizeLoadedBuildAccess(r, build, requestUser)
+	return h.authorizeLoadedBuildAccess(r, build)
 }
 
-func (h *WharfHandlers) authorizeLoadedBuildAccess(r *http.Request, build *models.Build, requestUser *models.User) error {
-	if requestUser == nil {
-		var ok bool
-		requestUser, ok = auth.GetUser(r.Context())
-		if !ok {
-			return fmt.Errorf("authentication required")
-		}
+func (h *WharfHandlers) authorizeLoadedBuildAccess(r *http.Request, build *models.Build) error {
+	requestUser, ok := auth.GetUser(r.Context())
+	if !ok {
+		return fmt.Errorf("authentication required")
 	}
 	upload, err := h.db.GetUploadByID(build.UploadID)
 	if err != nil {
@@ -111,17 +90,14 @@ func (h *WharfHandlers) authorizeLoadedBuildAccess(r *http.Request, build *model
 
 func writeBuildAccessError(w http.ResponseWriter, r *http.Request) {
 	if _, ok := auth.GetUser(r.Context()); !ok {
-		http.Error(w, `{"errors":["missing api_key"]}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "missing api_key")
 		return
 	}
-	http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
+	writeError(w, http.StatusForbidden, "access denied")
 }
 
 type WharfHandlers struct {
 	db                    models.Database
-	storageClient         *s3.Client
-	presignClient         *s3.PresignClient
-	bucketName            string
 	storage               ObjectStorage
 	archiveRebuildTimeout time.Duration
 }
@@ -132,14 +108,15 @@ var (
 )
 
 func NewWharfHandlers(db models.Database, storageClient *s3.Client, presignClient *s3.PresignClient, bucketName string) *WharfHandlers {
-	if presignClient == nil && storageClient != nil {
-		presignClient = s3.NewPresignClient(storageClient)
-	}
-	handlers := &WharfHandlers{db: db, storageClient: storageClient, presignClient: presignClient, bucketName: bucketName}
+	handlers := &WharfHandlers{db: db}
 	if storageClient != nil {
 		handlers.storage = newS3ObjectStorage(storageClient, presignClient, bucketName)
 	}
 	return handlers
+}
+
+func (h *WharfHandlers) GetWharfStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, WharfStatusResponse{OK: true})
 }
 
 func (h *WharfHandlers) absoluteURL(r *http.Request, path string) string {

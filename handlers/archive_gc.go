@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"denkit-stash/models"
-	"fmt"
+	"log"
 	"math/rand"
 	"time"
 )
@@ -36,14 +36,13 @@ type archiveGCStats struct {
 	errors       int
 }
 
-// StartArchiveGC launches the periodic eviction worker.
 func (h *WharfHandlers) StartArchiveGC(ctx context.Context, cfg ArchiveGCConfig) {
 	if !cfg.Enabled {
-		fmt.Printf("Archive GC disabled; archives are never evicted\n")
+		log.Printf("archive gc disabled; archives are never evicted")
 		return
 	}
 	if h.storage == nil {
-		fmt.Printf("Archive GC disabled: no object storage configured\n")
+		log.Printf("archive gc disabled: no object storage configured")
 		return
 	}
 	go func() {
@@ -58,7 +57,7 @@ func (h *WharfHandlers) StartArchiveGC(ctx context.Context, cfg ArchiveGCConfig)
 		defer ticker.Stop()
 		for {
 			stats := h.runArchiveGCOnce(ctx, cfg)
-			fmt.Printf("ARCHIVE-GC: evicted=%d bytes_freed=%d swept=%d skipped_lock=%d skipped_guard=%d errors=%d\n",
+			log.Printf("archive-gc: evicted=%d bytes_freed=%d swept=%d skipped_lock=%d skipped_guard=%d errors=%d",
 				stats.evicted, stats.bytesFreed, stats.sweptObjects, stats.skippedLock, stats.skippedGuard, stats.errors)
 			select {
 			case <-ctx.Done():
@@ -74,7 +73,7 @@ func (h *WharfHandlers) runArchiveGCOnce(ctx context.Context, cfg ArchiveGCConfi
 
 	candidates, err := h.db.ListEvictableArchiveFiles(time.Now().Add(-cfg.TTL), cfg.BatchLimit)
 	if err != nil {
-		fmt.Printf("ARCHIVE-GC: failed to list eviction candidates: %v\n", err)
+		log.Printf("archive-gc: failed to list eviction candidates: %v", err)
 		stats.errors++
 		return stats
 	}
@@ -93,7 +92,7 @@ func (h *WharfHandlers) runArchiveGCOnce(ctx context.Context, cfg ArchiveGCConfi
 func (h *WharfHandlers) evictArchive(ctx context.Context, cfg ArchiveGCConfig, candidate *models.BuildFile, stats *archiveGCStats) {
 	lock, acquired, err := h.db.TryAcquireBuildArchiveLock(ctx, candidate.BuildID)
 	if err != nil {
-		fmt.Printf("ARCHIVE-GC: failed to lock build %d: %v\n", candidate.BuildID, err)
+		log.Printf("archive-gc: failed to lock build %d: %v", candidate.BuildID, err)
 		stats.errors++
 		return
 	}
@@ -134,12 +133,12 @@ func (h *WharfHandlers) evictArchive(ctx context.Context, cfg ArchiveGCConfig, c
 	for _, required := range []string{"patch", "signature"} {
 		requiredFile, err := h.findBuildFile(file.BuildID, required, "default")
 		if err != nil || requiredFile.StoragePath == "" {
-			fmt.Printf("ARCHIVE-GC: refusing to evict build %d: missing %s/default row\n", file.BuildID, required)
+			log.Printf("archive-gc: refusing to evict build %d: missing %s/default row", file.BuildID, required)
 			stats.skippedGuard++
 			return
 		}
 		if _, err = h.storage.Head(ctx, requiredFile.StoragePath); err != nil {
-			fmt.Printf("ARCHIVE-GC: refusing to evict build %d: %s object missing in storage: %v\n", file.BuildID, required, err)
+			log.Printf("archive-gc: refusing to evict build %d: %s object missing in storage: %v", file.BuildID, required, err)
 			stats.skippedGuard++
 			return
 		}
@@ -156,7 +155,7 @@ func (h *WharfHandlers) evictArchive(ctx context.Context, cfg ArchiveGCConfig, c
 	}
 
 	if err = h.storage.Delete(ctx, file.StoragePath); err != nil {
-		fmt.Printf("ARCHIVE-GC: failed to delete object for build %d (will retry): %v\n", file.BuildID, err)
+		log.Printf("archive-gc: failed to delete object for build %d (will retry): %v", file.BuildID, err)
 		stats.errors++
 		return
 	}
@@ -174,7 +173,7 @@ func (h *WharfHandlers) evictArchive(ctx context.Context, cfg ArchiveGCConfig, c
 func (h *WharfHandlers) sweepEvictedObjects(ctx context.Context, stats *archiveGCStats) {
 	leftovers, err := h.db.ListEvictedArchiveFilesWithStorage(1000)
 	if err != nil {
-		fmt.Printf("ARCHIVE-GC: failed to list evicted leftovers: %v\n", err)
+		log.Printf("archive-gc: failed to list evicted leftovers: %v", err)
 		stats.errors++
 		return
 	}

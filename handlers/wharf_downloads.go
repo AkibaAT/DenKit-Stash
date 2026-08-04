@@ -3,52 +3,45 @@ package handlers
 import (
 	"denkit-stash/auth"
 	"denkit-stash/models"
-	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 )
 
-// GET /wharf/builds/{buildId}/files/{fileId}/download - Download build file.
 func (h *WharfHandlers) GetBuildFileDownload(w http.ResponseWriter, r *http.Request) {
-	buildIDStr := mux.Vars(r)["buildId"]
-	fileIDStr := mux.Vars(r)["fileId"]
-
-	fmt.Printf("GetBuildFileDownload request: buildId=%s, fileId=%s\n", buildIDStr, fileIDStr)
-
-	buildID, err := strconv.ParseInt(buildIDStr, 10, 64)
+	buildID, err := pathInt64(r, "buildId")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid build id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid build id")
 		return
 	}
 
-	fileID, err := strconv.ParseInt(fileIDStr, 10, 64)
+	fileID, err := pathInt64(r, "fileId")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid file id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid file id")
 		return
 	}
 
 	build, err := h.db.GetBuildByID(buildID)
 	if err != nil {
-		http.Error(w, `{"errors":["build not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "build not found")
 		return
 	}
-	if err = h.authorizeLoadedBuildAccess(r, build, nil); err != nil {
+	if err = h.authorizeLoadedBuildAccess(r, build); err != nil {
 		writeBuildAccessError(w, r)
 		return
 	}
 
 	buildFile, err := h.db.GetBuildFileByID(fileID)
 	if err != nil {
-		http.Error(w, `{"errors":["build file not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "build file not found")
 		return
 	}
 	if buildFile.BuildID != buildID {
-		http.Error(w, `{"errors":["build file does not belong to build"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "build file does not belong to build")
 		return
 	}
 	if buildFile.Type == "archive" && buildFile.SubType == "default" {
@@ -64,29 +57,24 @@ func (h *WharfHandlers) GetBuildFileDownload(w http.ResponseWriter, r *http.Requ
 func (h *WharfHandlers) serveArchiveDownload(w http.ResponseWriter, r *http.Request, buildID int64) {
 	buildFile, err := h.ensureArchive(r.Context(), buildID)
 	if err != nil {
-		fmt.Printf("Failed to ensure archive for build %d: %v\n", buildID, err)
-		http.Error(w, `{"errors":["archive unavailable"]}`, http.StatusNotFound)
+		log.Printf("failed to ensure archive for build %d: %v", buildID, err)
+		writeError(w, http.StatusNotFound, "archive unavailable")
 		return
 	}
 	h.redirectBuildFile(w, r, buildFile)
 }
 
-// GET /builds/{buildId}/download/{type}/{subType}
 func (h *WharfHandlers) GetBuildDownloadByType(w http.ResponseWriter, r *http.Request) {
-	buildID, err := strconv.ParseInt(mux.Vars(r)["buildId"], 10, 64)
+	buildID, err := pathInt64(r, "buildId")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid build id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid build id")
 		return
 	}
 	fileType := mux.Vars(r)["type"]
 	subType := mux.Vars(r)["subType"]
 
 	if err := h.authorizeBuildAccess(r, buildID); err != nil {
-		if _, ok := auth.GetUser(r.Context()); !ok {
-			http.Error(w, `{"errors":["missing api_key"]}`, http.StatusUnauthorized)
-			return
-		}
-		http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
+		writeBuildAccessError(w, r)
 		return
 	}
 
@@ -97,13 +85,12 @@ func (h *WharfHandlers) GetBuildDownloadByType(w http.ResponseWriter, r *http.Re
 
 	buildFile, err := h.findBuildFile(buildID, fileType, subType)
 	if err != nil {
-		http.Error(w, `{"errors":["build file not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "build file not found")
 		return
 	}
 	h.redirectBuildFile(w, r, buildFile)
 }
 
-// GET /{namespace}/{game}/{channel}/archive/default
 func (h *WharfHandlers) GetLatestChannelArchive(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	namespace := vars["namespace"]
@@ -112,27 +99,27 @@ func (h *WharfHandlers) GetLatestChannelArchive(w http.ResponseWriter, r *http.R
 
 	requestUser, ok := auth.GetUser(r.Context())
 	if !ok {
-		http.Error(w, `{"errors":["missing api_key"]}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "missing api_key")
 		return
 	}
 	if err := h.validateNamespaceAccess(requestUser, namespace); err != nil {
-		http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
+		writeError(w, http.StatusForbidden, "access denied")
 		return
 	}
 
 	user, err := h.db.GetUserByUsername(namespace)
 	if err != nil {
-		http.Error(w, `{"errors":["namespace not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "namespace not found")
 		return
 	}
 	game, err := h.db.GetGameByUserAndTitle(user.ID, gameName)
 	if err != nil {
-		http.Error(w, `{"errors":["game not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "game not found")
 		return
 	}
 	uploads, err := h.db.GetUploadsByGameID(game.ID)
 	if err != nil {
-		http.Error(w, `{"errors":["failed to load uploads"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to load uploads")
 		return
 	}
 	for _, upload := range uploads {
@@ -146,53 +133,42 @@ func (h *WharfHandlers) GetLatestChannelArchive(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	http.Error(w, `{"errors":["archive not found"]}`, http.StatusNotFound)
+	writeError(w, http.StatusNotFound, "archive not found")
 }
 
-// GET /builds/{installedBuildId}/upgrade-paths/{targetBuildId}
 func (h *WharfHandlers) GetUpgradePath(w http.ResponseWriter, r *http.Request) {
-	installedBuildID, err := strconv.ParseInt(mux.Vars(r)["installedBuildId"], 10, 64)
+	installedBuildID, err := pathInt64(r, "installedBuildId")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid installed build id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid installed build id")
 		return
 	}
-	targetBuildID, err := strconv.ParseInt(mux.Vars(r)["targetBuildId"], 10, 64)
+	targetBuildID, err := pathInt64(r, "targetBuildId")
 	if err != nil {
-		http.Error(w, `{"errors":["invalid target build id"]}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid target build id")
 		return
 	}
 
 	if err := h.authorizeBuildAccess(r, targetBuildID); err != nil {
-		if _, ok := auth.GetUser(r.Context()); !ok {
-			http.Error(w, `{"errors":["missing api_key"]}`, http.StatusUnauthorized)
-			return
-		}
-		http.Error(w, `{"errors":["access denied"]}`, http.StatusForbidden)
+		writeBuildAccessError(w, r)
 		return
 	}
 
 	builds, err := h.resolveUpgradePath(installedBuildID, targetBuildID)
 	if err != nil {
-		http.Error(w, `{"errors":["upgrade path not found"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "upgrade path not found")
 		return
 	}
 
-	responseBuilds := make([]map[string]interface{}, 0, len(builds))
+	responseBuilds := make([]WharfBuildResponse, 0, len(builds))
 	for _, build := range builds {
 		files, err := h.db.GetBuildFilesByBuildID(build.ID)
 		if err != nil {
-			http.Error(w, `{"errors":["failed to load build files"]}`, http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "failed to load build files")
 			return
 		}
-		responseBuilds = append(responseBuilds, serializeBuild(build, files))
+		responseBuilds = append(responseBuilds, newWharfBuildResponse(build, files))
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"upgradePath": map[string]interface{}{
-			"builds": responseBuilds,
-		},
-	})
+	writeJSON(w, http.StatusOK, UpgradePathResponse{UpgradePath: UpgradePathBody{Builds: responseBuilds}})
 }
 
 func (h *WharfHandlers) resolveUpgradePath(installedBuildID int64, targetBuildID int64) ([]*models.Build, error) {
@@ -243,17 +219,16 @@ func (h *WharfHandlers) findBuildFile(buildID int64, fileType string, subType st
 
 func (h *WharfHandlers) redirectBuildFile(w http.ResponseWriter, r *http.Request, buildFile *models.BuildFile) {
 	if !h.FileExists(buildFile.StoragePath) {
-		http.Error(w, `{"errors":["file not found in storage"]}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "file not found in storage")
 		return
 	}
 	signedURL, err := h.GetSignedURL(buildFile.StoragePath, time.Hour, h.downloadFilename(buildFile))
 	if err != nil {
-		http.Error(w, `{"errors":["could not generate download URL"]}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "could not generate download URL")
 		return
 	}
 	if strings.Contains(r.Header.Get("Accept"), "application/json") || r.URL.Query().Get("json") == "1" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"url": signedURL})
+		writeJSON(w, http.StatusOK, SignedURLResponse{URL: signedURL})
 		return
 	}
 	http.Redirect(w, r, signedURL, http.StatusTemporaryRedirect)
@@ -306,8 +281,8 @@ func (h *WharfHandlers) gameTitleForBuild(build *models.Build) string {
 	return game.Title
 }
 
-// sanitizeFilenamePart reduces an untrusted string — a game title, or the
-// --userversion butler was handed — to characters that survive a quoted
+// sanitizeFilenamePart reduces an untrusted string (a game title, or the
+// --userversion butler was handed) to characters that survive a quoted
 // Content-Disposition and every filesystem the download may land on. Runs of
 // rejected characters collapse into a single dash; leading and trailing
 // punctuation is dropped so the result can never read as a dotfile or a path.

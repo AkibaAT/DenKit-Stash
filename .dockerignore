@@ -13,8 +13,6 @@ denkit-stash
 denkit-stash.exe
 
 # Development directories
-simple-denkit-stash/
-fetch-test-*/
 storage/
 files/
 backups/
