@@ -126,6 +126,7 @@ type Database interface {
 	GetLatestCompletedBuildByGameChannelVersion(gameID int64, channel string, userVersion string) (*Build, error)
 	CreateBuild(build *Build) error
 	UpdateBuild(build *Build) error
+	ClaimBuildProcessing(buildID int64) (bool, error)
 
 	GetBuildFileByID(id int64) (*BuildFile, error)
 	GetBuildFilesByBuildID(buildID int64) ([]*BuildFile, error)

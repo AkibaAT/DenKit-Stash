@@ -394,6 +394,20 @@ func (d *PostgresDatabase) UpdateBuild(build *Build) error {
 	return err
 }
 
+func (d *PostgresDatabase) ClaimBuildProcessing(buildID int64) (bool, error) {
+	result, err := d.db.Exec(`
+		UPDATE builds SET state = 'processing', updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND state = 'started'`, buildID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
 func (d *PostgresDatabase) GetBuildsByUploadID(uploadID int64) ([]*Build, error) {
 	rows, err := d.db.Query(`
 		SELECT `+buildColumns+`

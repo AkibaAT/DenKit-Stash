@@ -942,6 +942,37 @@ func TestCheckAndUpdateBuildStateCompletesProcessingBuild(t *testing.T) {
 	}
 }
 
+func TestClaimBuildProcessingAllowsExactlyOneWinner(t *testing.T) {
+	_, db, upload, _ := newTestWharfHandler(t)
+	defer db.Close()
+
+	build := createBuild(t, db, upload.ID, nil)
+
+	claimed, err := db.ClaimBuildProcessing(build.ID)
+	if err != nil {
+		t.Fatalf("claim build processing: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected first claim on a started build to win")
+	}
+
+	claimedAgain, err := db.ClaimBuildProcessing(build.ID)
+	if err != nil {
+		t.Fatalf("claim build processing again: %v", err)
+	}
+	if claimedAgain {
+		t.Fatal("expected second claim to lose while the build is processing")
+	}
+
+	updatedBuild, err := db.GetBuildByID(build.ID)
+	if err != nil {
+		t.Fatalf("get build: %v", err)
+	}
+	if updatedBuild.State != "processing" {
+		t.Fatalf("expected processing state after claim, got %q", updatedBuild.State)
+	}
+}
+
 func TestResolveUpgradePathRequiresParentChainAndPatch(t *testing.T) {
 	handler, db, upload, _ := newTestWharfHandler(t)
 	defer db.Close()

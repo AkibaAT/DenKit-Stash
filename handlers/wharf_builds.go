@@ -360,10 +360,12 @@ func (h *WharfHandlers) FinalizeBuildFile(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	err = h.checkAndUpdateBuildState(buildID)
-	if err != nil {
-		log.Printf("warning: failed to update build state: %v", err)
-	}
+	go func() {
+		if err := h.checkAndUpdateBuildState(buildID); err != nil {
+			log.Printf("warning: failed to update build %d state: %v", buildID, err)
+		}
+	}()
+
 	writeJSON(w, http.StatusOK, FinalizedBuildFileEnvelopeResponse{File: FinalizedBuildFileResponse{
 		ID: buildFile.ID, Size: buildFile.Size, State: buildFile.State,
 	}})

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,11 +58,20 @@ func (h *WharfHandlers) checkAndUpdateBuildState(buildID int64) error {
 	hasArchive := hasReadyRequiredFile(filesByKind, "archive/default")
 
 	if hasPatch && hasSignature && !hasArchive && build.State == "started" {
-		build.State = "processing"
-		if err = h.db.UpdateBuild(build); err != nil {
+		claimed, err := h.db.ClaimBuildProcessing(buildID)
+		if err != nil {
 			return err
 		}
+		if !claimed {
+			// Another finalization is already generating this archive.
+			return nil
+		}
+		build.State = "processing"
 		if err = h.generateArchiveDefault(build); err != nil {
+			build.State = "failed"
+			if updateErr := h.db.UpdateBuild(build); updateErr != nil {
+				log.Printf("warning: failed to mark build %d failed after archive generation error: %v", buildID, updateErr)
+			}
 			return fmt.Errorf("failed to generate archive/default: %w", err)
 		}
 		return h.checkAndUpdateBuildState(buildID)
