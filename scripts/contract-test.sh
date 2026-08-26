@@ -65,6 +65,37 @@ wait_for_postgres() {
 	return 1
 }
 
+# butler push returns after the patch and signature uploads. Archive generation
+# and the channel-head advance run after finalize, so fetch/status only see the
+# build once it is completed.
+wait_for_completed_build() {
+	local build_id="$1"
+	local channel_url="${SERVER_URL}/wharf/channels/main?target=testuser/test-game"
+	local body=""
+	local build_body=""
+	for _ in $(seq 1 60); do
+		if build_body="$(curl -fsS -H "Authorization: ${API_KEY}" "${SERVER_URL}/builds/${build_id}" 2>/dev/null)"; then
+			if grep -q '"state":"failed"' <<<"${build_body}"; then
+				echo "build ${build_id} failed" >&2
+				printf '%s\n' "${build_body}" >&2
+				cat "${WORK_DIR}/server.log" >&2 || true
+				return 1
+			fi
+		fi
+		if body="$(curl -fsS -H "Authorization: ${API_KEY}" "${channel_url}" 2>/dev/null)" &&
+			grep -q "\"id\":${build_id}" <<<"${body}" &&
+			grep -q '"state":"completed"' <<<"${body}"; then
+			return 0
+		fi
+		sleep 0.5
+	done
+	echo "timed out waiting for build ${build_id} to complete" >&2
+	printf '%s\n' "${body}" >&2
+	printf '%s\n' "${build_body}" >&2
+	cat "${WORK_DIR}/server.log" >&2 || true
+	return 1
+}
+
 require_command curl
 require_command docker
 require_command go
@@ -161,6 +192,7 @@ mkdir -p "${GAME_DIR}" "${OUT1_DIR}" "${OUT2_DIR}" "${PATCH_OUT_DIR}" "${STAGE_D
 echo "pushing first build"
 printf 'Hello World v1\n' >"${GAME_DIR}/game.txt"
 BUTLER_API_KEY="${API_KEY}" "${BUTLER_BIN}" --address="${SERVER_URL}" --assume-yes push "${GAME_DIR}" testuser/test-game:main
+wait_for_completed_build 1
 
 echo "fetching first build"
 BUTLER_API_KEY="${API_KEY}" "${BUTLER_BIN}" --address="${SERVER_URL}" fetch testuser/test-game:main "${OUT1_DIR}"
@@ -172,6 +204,7 @@ printf 'Second file\n' >"${GAME_DIR}/extra.txt"
 SECOND_PUSH_OUTPUT="$(BUTLER_API_KEY="${API_KEY}" "${BUTLER_BIN}" --address="${SERVER_URL}" --assume-yes push "${GAME_DIR}" testuser/test-game:main)"
 printf '%s\n' "${SECOND_PUSH_OUTPUT}"
 grep -q 'last build is 1' <<<"${SECOND_PUSH_OUTPUT}"
+wait_for_completed_build 2
 
 echo "checking status"
 STATUS_OUTPUT="$(BUTLER_API_KEY="${API_KEY}" "${BUTLER_BIN}" --address="${SERVER_URL}" status testuser/test-game:main)"
