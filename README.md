@@ -22,7 +22,7 @@ DenKit is independent software and is not an official itch.io service, product, 
 
 ## Requirements
 
-- Go 1.26.5 or newer
+- Go 1.27.0 or newer
 - PostgreSQL for normal deployments
 - RustFS or another S3-compatible service
 - Docker for the contract test and production compose workflow
