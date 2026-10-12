@@ -18,7 +18,7 @@ POSTGRES_USER="${POSTGRES_USER:-denkit}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-denkit}"
 SERVER_BIN="${SERVER_BIN:-${WORK_DIR}/denkit-stash}"
 BUTLER_BIN="${BUTLER_BIN:-${WORK_DIR}/butler}"
-BUTLER_VERSION="${BUTLER_VERSION:-15.27.0}"
+BUTLER_VERSION="${BUTLER_VERSION:-15.32.0}"
 SERVER_PID=""
 
 cleanup() {
@@ -111,11 +111,11 @@ if [[ ! -x "${BUTLER_BIN}" ]]; then
 	case "$(uname -m)" in
 		x86_64 | amd64)
 			BUTLER_CHANNEL="linux-amd64"
-			BUTLER_SHA256="${BUTLER_SHA256:-b9f0d6eef33036031cafaf59939d9f3bc724e2b674c510d4a9cf8a9f1008e299}"
+			BUTLER_SHA256="${BUTLER_SHA256:-2335971394ef6596f95ded0833e85ee28755e13761716ef4c91d6b11f69162f5}"
 			;;
 		aarch64 | arm64)
 			BUTLER_CHANNEL="linux-arm64"
-			BUTLER_SHA256="${BUTLER_SHA256:-63c43e90d7836138cafcbf9d395d81989c4065ecf00f0239d0732bc938e46032}"
+			BUTLER_SHA256="${BUTLER_SHA256:-4f2da37785fd9cbc15052427490e4e4f5cd735a019f21554d6273fa9a3490152}"
 			;;
 		*)
 			echo "unsupported architecture for automatic butler download: $(uname -m)" >&2
@@ -140,7 +140,7 @@ docker run --rm -d \
 	-e "RUSTFS_ACCESS_KEY=${S3_ACCESS_KEY}" \
 	-e "RUSTFS_SECRET_KEY=${S3_SECRET_KEY}" \
 	-e "RUSTFS_CONSOLE_ENABLE=true" \
-	rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3 --address :9000 --console-enable /data >/dev/null
+	rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c --address :9000 --console-enable /data >/dev/null
 wait_for_http "http://127.0.0.1:${RUSTFS_PORT}/health"
 
 echo "starting PostgreSQL"
@@ -150,7 +150,7 @@ docker run --rm -d \
 	-e "POSTGRES_DB=${POSTGRES_DB}" \
 	-e "POSTGRES_USER=${POSTGRES_USER}" \
 	-e "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" \
-	postgres:18.4-alpine3.23@sha256:38346350acb3e824c6948e6df7ff4759f48ba09d8ef4cb8d1b6e6db120f56872 >/dev/null
+	postgres:18.6-alpine3.24@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873 >/dev/null
 wait_for_postgres
 
 SERVER_ENV=(

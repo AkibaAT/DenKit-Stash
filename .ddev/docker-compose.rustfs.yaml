@@ -1,7 +1,7 @@
 services:
   rustfs:
     container_name: ddev-${DDEV_SITENAME}-rustfs
-    image: ${RUSTFS_DOCKER_IMAGE:-rustfs/rustfs@sha256:fa19210ac4697c79d7ccca1ec9b0eb91aebacc6691991ffb14014bb3c67e6cc3}
+    image: ${RUSTFS_DOCKER_IMAGE:-rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c}
     environment:
       RUSTFS_ACCESS_KEY: ddevrustfs
       RUSTFS_SECRET_KEY: ddevrustfs
